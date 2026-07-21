@@ -316,6 +316,13 @@ table.duty{border-collapse:separate;border-spacing:0;font-size:12px;white-space:
 .avgline{font-size:11.5px;color:var(--muted);margin:2px 0 11px;padding:6px 10px;background:var(--accent-soft);border-radius:8px;}
 .benchmark{display:flex;align-items:center;gap:10px;font-size:13px;margin-top:6px;}
 .benchmark .me{font-weight:800;color:var(--c-N);}
+.nhist{display:flex;gap:12px;align-items:flex-end;height:104px;padding-top:14px;}
+.nhist .nh{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;}
+.nhist .nhw{flex:1;width:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;}
+.nhist .nhc{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:3px;}
+.nhist .nhb{width:64%;max-width:36px;background:var(--accent-soft);border-radius:5px 5px 0 0;min-height:3px;}
+.nhist .nhb.avg{background:var(--c-N);}
+.nhist .nhx{font-size:12.5px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;}
 </style>
 
 <div id="stage" class="stage">
@@ -677,12 +684,13 @@ function renderStatAdmin(){
   const comp=a.per.map(x=>compBar(x)).join('');
   // 교대별 일평균
   const gc=groupCompare(['D','E','N','M'].map(s=>({lab:s,cur:a.daily[s],prev:p?p.daily[s]:null})));
-  // 나이트 공정성 정렬 + 전월 델타
-  const sorted=[...a.per].sort((x,y)=>y.N-x.N);const mx=Math.max(...sorted.map(x=>x.N))||1;
-  const pmap={};if(p)p.per.forEach(x=>pmap[x.name]=x.N);
-  const fair=sorted.map(x=>{const pv=pmap[x.name];const d=pv!=null?x.N-pv:null;
-    const dd=d===null?'':d>0?`<span style="color:var(--danger)">▲${d}</span>`:d<0?`<span style="color:var(--good)">▼${-d}</span>`:'<span style="color:var(--muted)">–</span>';
-    return `<div class="frow"><span>${x.name}</span><span class="fbar"><span style="width:${x.N/mx*100}%"></span></span><span class="fd">${x.N}개 ${dd}</span></div>`;}).join('');
+  // 나이트 분포 (컴팩트 히스토그램)
+  const dist={};a.per.forEach(x=>{dist[x.N]=(dist[x.N]||0)+1;});
+  const nkeys=[];for(let v=a.nMin;v<=a.nMax;v++)nkeys.push(v);
+  const maxc=Math.max(...nkeys.map(v=>dist[v]||0))||1,avgR=Math.round(a.avgN);
+  const hist=`<div class="nhist">${nkeys.map(v=>{const cnt=dist[v]||0;
+    return `<div class="nh"><div class="nhw"><span class="nhc">${cnt||''}</span><div class="nhb${v===avgR?' avg':''}" style="height:${cnt/maxc*100}%"></div></div><span class="nhx">${v}</span></div>`;}).join('')}</div>
+    <div class="chlegend"><span>가로=나이트 수 / 세로=인원 · 보라=평균(${fmt(a.avgN)}) 부근</span></div>`;
   return `<div class="crumb">61병동 · 부서장 통계</div>
     <div class="h1">근무 통계 <span style="font-size:13px;font-weight:500;color:var(--muted)">전월 대비</span></div>
     ${monthNav()}
@@ -690,8 +698,8 @@ function renderStatAdmin(){
       ${kpis}
       <div class="chartcard"><h3>간호사별 근무 구성</h3><p class="sub">한 달 D·E·N·미드·오프 비율 (막대에 일수)</p>${comp}${compLegend()}</div>
       <div class="chartcard"><h3>교대별 일평균 인원 · 전월 대비</h3><p class="sub">하루 평균 배치 인원</p>${gc}</div>
-      <div class="chartcard"><h3>나이트 배분 공정성</h3><p class="sub">많은 순 정렬 · 전월 대비 증감</p>
-        <div class="avgline">평균 ${fmt(a.avgN)}개 · 최소 ${a.nMin} ~ 최대 ${a.nMax} (편차 ${a.nSpread}, 목표 ≤3)</div>${fair}</div>
+      <div class="chartcard"><h3>나이트 배분 공정성</h3><p class="sub">인원별 나이트 수 분포</p>
+        <div class="avgline">평균 ${fmt(a.avgN)}개 · 최소 ${a.nMin} ~ 최대 ${a.nMax} · 편차 ${a.nSpread} (목표 ≤3)</div>${hist}</div>
     </div>`;
 }
 
