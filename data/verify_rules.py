@@ -13,6 +13,26 @@ from collections import Counter
 from pathlib import Path
 
 WORK_LETTERS = {"D", "E", "N", "M"}
+REST_CODES = {"OFF", "HY", "경조", "PH", "AH"}  # 휴무성 코드(오프+연차 등)
+# 월별 1일의 요일 (Mon=0 .. Sun=6): 7월1일=수, 8월1일=토
+FIRST_WD = {"2026-07": 2, "2026-08": 5}
+
+
+def is_rest(cell: str) -> bool:
+    return cell in REST_CODES
+
+
+def mon_weeks(month: str, ndays: int) -> list[list[int]]:
+    """달력주(월요일 시작)로 날짜를 묶는다(부분주 포함). 반환: 1-based 날짜 리스트들."""
+    base = FIRST_WD.get(month, 0)
+    weeks, cur = [], []
+    for d in range(1, ndays + 1):
+        if (base + (d - 1)) % 7 == 0 and cur:  # 월요일에 새 주 시작
+            weeks.append(cur); cur = []
+        cur.append(d)
+    if cur:
+        weeks.append(cur)
+    return weeks
 
 
 def eff_shift(cell: str) -> str | None:
@@ -34,9 +54,11 @@ def is_off(cell: str) -> bool:
     return cell == "OFF"
 
 
-def analyze_month(label: str, roster: list[dict]) -> None:
+def analyze_month(label: str, roster: list[dict], ndays: int = 31) -> None:
     nurses = [n for n in roster if not n["manager"]]
-    ndays = 31
+    week_under2 = 0   # 달력주 오프+연차 < 2 (소프트 지표)
+    week_total = 0
+    week_ex: list[str] = []
 
     counts = Counter()          # 규칙별 위반 건수
     examples: dict[str, list] = {}
@@ -101,15 +123,21 @@ def analyze_month(label: str, roster: list[dict]) -> None:
             if trio[0] == "OFF" and is_work(trio[1]) and trio[2] == "OFF":
                 add("T6 고립근무 (OFF-근무-OFF)", name, f"{d+2}일 {trio[1]} 고립")
 
-        # 7일 슬라이딩 윈도우: 주 근무≤6, 주 OFF≥2
+        # T3(하드): 7일 슬라이딩 윈도우 근무 ≤6 (= 7일마다 최소 1 휴무)
         for start in range(ndays - 6):
             win = [c for c in s[start:start + 7] if c != "."]
-            if len(win) < 7:
-                continue
-            if sum(1 for c in win if is_work(c)) > 6:
+            if len(win) == 7 and sum(1 for c in win if is_work(c)) > 6:
                 add("T3 주 근무>6", name, f"{start+1}~{start+7}일")
-            if sum(1 for c in win if is_off(c)) < 2:
-                add("T2 주 OFF<2", name, f"{start+1}~{start+7}일")
+
+        # T2(소프트): 달력주(월~일) 오프+연차 ≥2 선호 — 하드 아님(§4.4 참고)
+        for days in mon_weeks(label, ndays):
+            if len(days) != 7 or any(s[d - 1] == "." for d in days):
+                continue
+            week_total += 1
+            if sum(1 for d in days if is_rest(s[d - 1])) < 2:
+                week_under2 += 1
+                if len(week_ex) < 4:
+                    week_ex.append(f"{name} {days[0]}~{days[-1]}일")
 
     # ---- 출력 ----
     print(f"\n{'='*60}\n■ {label}  (간호사 {len(nurses)}명, 파트장 제외)\n{'='*60}")
@@ -117,7 +145,7 @@ def analyze_month(label: str, roster: list[dict]) -> None:
     ordered = [
         "T7 나이트후 D/E/M", "역회전 E→D", "T11 NOD (N-OFF-D)",
         "T11 EOD (E-OFF-D)", "T6 고립근무 (OFF-근무-OFF)",
-        "T3 주 근무>6", "T2 주 OFF<2",
+        "T3 주 근무>6",
     ]
     for r in ordered:
         c = counts.get(r, 0)
@@ -135,6 +163,13 @@ def analyze_month(label: str, roster: list[dict]) -> None:
     print("  분포:", dict(sorted(ns.items())),
           "| >3인 사람:", [f"{n}({m})" for n, m in max_night_streaks if m > 3] or "없음")
 
+    print("\n[T2 주간 오프 — 소프트 지표] 달력주(월~일) 오프+연차 ≥2")
+    ratio = (week_total - week_under2) / week_total * 100 if week_total else 0
+    print(f"  완전주 {week_total}개 중 <2인 주 {week_under2}개 (충족률 {ratio:.0f}%)"
+          f" → 하드 아님, 소프트 선호로 처리")
+    if week_ex:
+        print("  예:", " / ".join(week_ex))
+
     print("\n[나이트 배분 공정성]")
     vals = [v for _, v in night_totals]
     if vals:
@@ -146,6 +181,6 @@ def analyze_month(label: str, roster: list[dict]) -> None:
 if __name__ == "__main__":
     doc = json.loads((Path(__file__).parent / "schedule.json").read_text(encoding="utf-8"))
     for label, m in doc["months"].items():
-        analyze_month(label, m["roster"])
+        analyze_month(label, m["roster"], m["days"])
     print("\n※ 해석: '✅ 0건'인 규칙 = 실제 표에서 항상 지켜짐 → 하드 제약 후보.")
     print("   '⚠️ 다수'인 규칙 = 예외가 존재 → 소프트로 두거나 규칙 재검토 필요.")
