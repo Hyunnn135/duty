@@ -172,6 +172,39 @@ table.duty{border-collapse:separate;border-spacing:0;font-size:12px;white-space:
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0);}
 .mocknote{background:var(--accent-soft);border:1px solid var(--line);border-radius:10px;
   padding:9px 13px;font-size:11.5px;color:var(--accent);margin-bottom:14px;display:flex;gap:8px;align-items:center;}
+
+/* 원티드 신청 — 근무종류 칩 */
+.shchips{display:flex;gap:8px;flex-wrap:wrap;}
+.shchip{border:1.5px solid var(--line);background:var(--panel);border-radius:10px;
+  padding:7px 12px 7px 8px;font-size:12.5px;display:inline-flex;align-items:center;gap:7px;color:var(--ink);font-weight:600;}
+.shchip:hover{border-color:var(--accent);}
+.shchip.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft);}
+.warn-note{background:var(--sh-D-bg);color:var(--sh-D-fg);border-radius:9px;
+  padding:10px 12px;font-size:12px;margin:12px 0 16px;line-height:1.45;}
+.sel-label{margin-top:12px;font-size:13.5px;font-weight:700;color:var(--accent);
+  display:flex;align-items:center;gap:7px;}
+/* 캘린더 */
+.cal{margin-top:4px;}
+.cal .cgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;}
+.cal .cwd{text-align:center;font-size:11px;font-weight:700;padding:2px 0 4px;}
+.cal .cday{aspect-ratio:1/1;min-height:42px;border:1px solid var(--line);border-radius:9px;
+  display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1px;
+  font-size:14px;font-variant-numeric:tabular-nums;background:var(--panel);
+  cursor:pointer;user-select:none;transition:.08s;}
+.cal .cday.blank{border:0;background:transparent;cursor:default;}
+.cal .cday:not(.blank):hover{border-color:var(--accent);}
+.cal .cday.sun{color:var(--danger);}
+.cal .cday.sat{color:var(--accent);}
+.cal .cday.selstart,.cal .cday.selend{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:800;}
+.cal .cday.inrange{background:var(--accent-soft);border-color:var(--accent-soft);color:var(--accent);}
+.cal.view .cday{cursor:default;}
+.cal .cday.has{border-color:transparent;font-weight:800;}
+.cal .cday.has.sh-D{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.cal .cday.has.sh-E{background:var(--sh-E-bg);color:var(--sh-E-fg);}
+.cal .cday.has.sh-N{background:var(--sh-N-bg);color:var(--sh-N-fg);}
+.cal .cday.has.sh-O{background:var(--sh-O-bg);color:var(--sh-O-fg);}
+.cal .cday .mk{font-size:9px;font-weight:800;letter-spacing:.02em;}
+@media(max-width:560px){.cal .cday{min-height:38px;font-size:13px;border-radius:8px;}}
 </style>
 
 <div class="top">
@@ -213,6 +246,44 @@ const DATA={"2026-07": {"first": "수", "roster": [{"t": 1, "name": "김은미",
 const WD=['월','화','수','목','금','토','일'];
 const wdIdx={'월':0,'화':1,'수':2,'목':3,'금':4,'토':5,'일':6};
 let curMonth='2026-07', curRole='admin';
+let selShift='OFF', pickStart=null, pickEnd=null;
+const MYREQ=[{d:2,s:'OFF'},{d:9,s:'N'},{d:15,s:'OFF'},{d:16,s:'OFF'},{d:17,s:'OFF'}];
+const SHIFT_KO={D:'데이',E:'이브닝',N:'나이트',OFF:'오프'};
+const WKO=['일','월','화','수','목','금','토'];
+function calMeta(){const wd=wdIdx[DATA[curMonth].first];return{lead:(wd+1)%7,nd:31};}
+function wdHead(){return WKO.map((w,i)=>`<div class="cwd" style="color:${i===0?'var(--danger)':i===6?'var(--accent)':'var(--muted)'}">${w}</div>`).join('');}
+function pickerCal(){
+  const {lead,nd}=calMeta();let c=wdHead();
+  for(let i=0;i<lead;i++)c+='<div class="cday blank"></div>';
+  for(let d=1;d<=nd;d++){const dow=(lead+d-1)%7;let cls='cday';
+    if(dow===0)cls+=' sun';if(dow===6)cls+=' sat';
+    if(pickStart&&pickEnd){if(d===pickStart||d===pickEnd)cls+=' selstart';else if(d>pickStart&&d<pickEnd)cls+=' inrange';}
+    else if(pickStart&&d===pickStart)cls+=' selstart';
+    c+=`<div class="${cls}" onclick="pickDay(${d})">${d}</div>`;}
+  return `<div class="cal"><div class="cgrid">${c}</div></div>`;
+}
+function viewCal(){
+  const {lead,nd}=calMeta();const mk={};MYREQ.forEach(r=>mk[r.d]=r.s);let c=wdHead();
+  for(let i=0;i<lead;i++)c+='<div class="cday blank"></div>';
+  for(let d=1;d<=nd;d++){const dow=(lead+d-1)%7;let cls='cday';
+    if(dow===0)cls+=' sun';if(dow===6)cls+=' sat';const s=mk[d];
+    const info=s?CLASS(s):['',''];
+    c+=`<div class="${cls}${s?' has '+info[0]:''}">${d}${s?`<span class="mk">${info[1]}</span>`:''}</div>`;}
+  return `<div class="cal view"><div class="cgrid">${c}</div></div>`;
+}
+function pickDay(d){
+  if(pickStart===null||pickEnd!==null){pickStart=d;pickEnd=null;}
+  else if(d<pickStart){pickEnd=pickStart;pickStart=d;}
+  else if(d>pickStart){pickEnd=d;}
+  render();
+}
+function setShift(s){selShift=s;render();}
+function selLabel(){
+  const mm=curMonth.slice(5);
+  if(pickStart===null)return '날짜를 선택하세요 (하루 또는 시작~종료)';
+  if(pickEnd===null)return `${mm}월 ${pickStart}일 (1일)`;
+  return `${mm}월 ${pickStart}일 ~ ${pickEnd}일 · 총 ${pickEnd-pickStart+1}일`;
+}
 
 const CLASS=c=>{
   if(c==='D')return['sh-D','D'];if(c==='E')return['sh-E','E'];if(c==='N')return['sh-N','N'];
@@ -295,29 +366,45 @@ function renderDuty(){
 }
 
 function renderReq(){
-  const mine=curRole==='staff';
+  if(curRole!=='staff') return renderReqAdmin();
+  const chips=['OFF','D','E','N'].map(s=>`<button class="shchip ${selShift===s?'on':''}" onclick="setShift('${s}')"><span class="chip ${CLASS(s)[0]}">${CLASS(s)[1]}</span>${SHIFT_KO[s]}</button>`).join('');
   return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">원티드 오프 신청</div>
-  <div class="mocknote">${mine?'부서원이 원하는 오프·나이트를 신청하면 파트장 승인 후 근무표에 반영됩니다.':'부서원 신청을 검토·승인하세요. (월 최대 3건, 겹치면 공정 순번)'}</div>
   <div class="grid2">
     <div class="panel">
-      <div style="font-weight:700;margin-bottom:12px;">${mine?'새 신청':'대기 중 신청'} </div>
-      ${mine?`
-        <div class="field"><label>희망 날짜</label><input type="date" value="2026-08-15"></div>
-        <div class="field"><label>종류</label><select><option>오프(OFF)</option><option>나이트(N)</option></select></div>
-        <div class="field"><label>사유 (선택)</label><input placeholder="예: 가족 행사"></div>
-        <button class="btn" onclick="toast('신청이 접수되었습니다 · 파트장 승인 대기')">신청하기</button>
-        <div class="note">이번 달 신청 2 / 3건 사용</div>`
-      :`
-        ${reqItem('신유진','8/15 오프','가족 행사','wait')}
-        ${reqItem('이지은','8/9 나이트','—','wait')}
-        ${reqItem('강고은','8/22 오프','병원 예약','ok')}
-        ${reqItem('문수연','8/3 오프','—','ok')}`}
+      <div style="font-weight:700;margin-bottom:11px;">새 신청</div>
+      <div class="field"><label>근무 종류</label><div class="shchips">${chips}</div></div>
+      <div class="warn-note">⚠️ <b>오프가 최우선으로 반영됩니다.</b> 데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다.</div>
+      <div class="field"><label>희망 기간 — 하루만, 또는 시작~종료를 눌러 연속으로 선택</label>
+        ${pickerCal()}
+        <div class="sel-label">📅 ${selLabel()}</div></div>
+      <button class="btn" onclick="toast('신청이 접수되었습니다 · 파트장 승인 대기')">신청하기</button>
+      <div class="note">이번 달 신청 2 / 3건 사용</div>
     </div>
     <div class="panel">
-      <div style="font-weight:700;margin-bottom:12px;">내 신청 현황</div>
-      ${reqItem('나','8/15 오프','가족 행사','wait',true)}
-      ${reqItem('나','8/2 오프','—','ok',true)}
-      <div class="note" style="margin-top:14px">반영률: 이번 달 16/18건 (89%)</div>
+      <div style="font-weight:700;margin-bottom:11px;">내 신청 현황</div>
+      ${viewCal()}
+      <div class="legend" style="margin-top:13px">
+        ${['OFF','N','D','E'].map(s=>`<span class="lg"><span class="chip ${CLASS(s)[0]}">${CLASS(s)[1]}</span>${SHIFT_KO[s]}</span>`).join('')}
+      </div>
+      <div class="note" style="margin-top:11px">반영률: 이번 달 16/18건 (89%) · 오프 4건 모두 반영</div>
+    </div>
+  </div>`;
+}
+function renderReqAdmin(){
+  return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">원티드 오프 신청 · 승인</div>
+  <div class="mocknote">부서원 신청을 검토·승인하세요. 신청 기간(윈도우)은 병동 설정에서 통제 · 오프 최우선 반영</div>
+  <div class="grid2">
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:12px;">대기 중 신청</div>
+      ${reqItem('신유진','8/15~17 오프','가족 행사','wait')}
+      ${reqItem('이지은','8/9 나이트','—','wait')}
+      ${reqItem('강고은','8/22 오프','병원 예약','ok')}
+      ${reqItem('문수연','8/3 오프','—','ok')}
+    </div>
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:11px;">이번 달 신청 캘린더</div>
+      ${viewCal()}
+      <div class="note" style="margin-top:11px">색상 = 신청 근무 종류 · 오프 우선 배정</div>
     </div>
   </div>`;
 }
