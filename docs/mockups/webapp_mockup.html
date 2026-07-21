@@ -205,17 +205,92 @@ table.duty{border-collapse:separate;border-spacing:0;font-size:12px;white-space:
 .cal .cday.has.sh-O{background:var(--sh-O-bg);color:var(--sh-O-fg);}
 .cal .cday .mk{font-size:9px;font-weight:800;letter-spacing:.02em;}
 @media(max-width:560px){.cal .cday{min-height:38px;font-size:13px;border-radius:8px;}}
+
+/* ===== 기기/모바일 ===== */
+.stage{display:block;}
+.bottomnav{display:none;}
+.stage.bezel{max-width:406px;margin:18px auto;height:824px;border:9px solid #0b1015;
+  border-radius:32px;overflow:hidden;display:flex;flex-direction:column;background:var(--page);
+  box-shadow:0 24px 70px rgba(0,0,0,.4);}
+.stage.bezel .shell{flex:1;min-height:0;overflow-y:auto;}
+.stage.bezel .top{position:sticky;}
+/* 모바일 레이아웃(프리뷰·실기기 공통) */
+.stage.mlayout .side{display:none;}
+.stage.mlayout .shell{display:block;}
+.stage.mlayout .main{padding:14px 13px 74px;}
+.stage.mlayout .top{height:52px;padding:0 12px;gap:10px;}
+.stage.mlayout .bsub,.stage.mlayout .wardpill{display:none;}
+.stage.mlayout .cards{grid-template-columns:1fr 1fr;gap:9px;}
+.stage.mlayout .grid2{grid-template-columns:1fr;}
+.stage.mlayout .bottomnav{display:flex;}
+.stage.mlayout.bezel .bottomnav{flex-shrink:0;}
+.stage.mlayout:not(.bezel) .bottomnav{position:fixed;bottom:0;left:0;right:0;z-index:40;}
+.bottomnav{height:60px;border-top:1px solid var(--line);background:var(--panel);}
+.bottomnav .bn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:3px;font-size:10px;color:var(--muted);cursor:pointer;font-weight:600;}
+.bottomnav .bn.on{color:var(--accent);}
+.bottomnav .bn .bi{font-size:18px;}
+
+/* 모바일 근무표 — 주간뷰 */
+.mtoggle{display:flex;gap:7px;margin:4px 0 12px;}
+.mtoggle button{flex:1;padding:10px;border:1.5px solid var(--line);background:var(--panel);
+  border-radius:11px;font-weight:700;font-size:13.5px;color:var(--ink);}
+.mtoggle button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.wknav{display:flex;align-items:center;justify-content:space-between;background:var(--panel);
+  border:1px solid var(--line);border-radius:11px;padding:8px 10px;margin-bottom:12px;font-weight:700;font-size:13.5px;}
+.wknav button{background:transparent;border:0;font-size:19px;color:var(--accent);padding:2px 12px;line-height:1;}
+.mydays{display:flex;flex-direction:column;gap:8px;}
+.myday{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);
+  border-radius:13px;padding:12px 14px;}
+.myday.off{opacity:.68;}
+.myday .dl{display:flex;flex-direction:column;align-items:center;min-width:32px;}
+.myday .dw{font-size:11px;font-weight:800;}
+.myday .dn{font-size:21px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1;}
+.myday .dt{flex:1;font-size:12px;color:var(--muted);padding-left:6px;}
+.myday .dchip{min-width:48px;height:42px;border-radius:11px;display:grid;place-items:center;
+  font-size:15px;font-weight:800;}
+.myday .dchip.sh-D{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.myday .dchip.sh-E{background:var(--sh-E-bg);color:var(--sh-E-fg);}
+.myday .dchip.sh-N{background:var(--sh-N-bg);color:var(--sh-N-fg);}
+.myday .dchip.sh-M{background:var(--sh-M-bg);color:var(--sh-M-fg);}
+.myday .dchip.sh-C{background:var(--sh-M-bg);color:var(--sh-M-fg);font-size:12px;}
+.myday .dchip.sh-O{background:var(--sh-O-bg);color:var(--sh-O-fg);}
+.myday .dchip.sh-HY{background:var(--sh-HY-bg);color:var(--sh-HY-fg);font-size:11px;}
+.duty.mini th,.duty.mini td{height:36px;}
+.duty.mini .nmcol{min-width:64px;font-size:11.5px;padding:0 7px;}
+.duty.mini .day{width:38px;min-width:38px;}
+.meRow td{background:var(--accent-soft);}
+.meRow td.nmcol{color:var(--accent);font-weight:800;}
+
+/* 상세 명단 */
+.rtable{width:100%;border-collapse:collapse;font-size:12.5px;}
+.rtable th,.rtable td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;white-space:nowrap;}
+.rtable th{color:var(--muted);font-weight:700;font-size:11.5px;}
+.rtable td.c{text-align:center;}
+.cbadge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px;}
+.cbadge.up{background:var(--sh-M-bg);color:var(--sh-M-fg);}
+.cbadge.mid{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.cbadge.low{background:var(--sh-HY-bg);color:var(--sh-HY-fg);}
+.lock{background:var(--sh-HY-bg);color:var(--sh-HY-fg);border-radius:9px;padding:9px 13px;
+  font-size:12px;margin-bottom:14px;display:flex;gap:8px;align-items:center;}
+.winbar{display:flex;align-items:center;gap:10px;background:var(--accent-soft);border:1px solid var(--line);
+  border-radius:10px;padding:9px 13px;font-size:12.5px;margin-bottom:14px;}
+.winbar .st{font-weight:700;color:var(--accent);}
+.winbar button{margin-left:auto;background:transparent;border:1px solid var(--line);border-radius:7px;
+  padding:4px 9px;font-size:11.5px;color:var(--muted);cursor:pointer;}
 </style>
 
+<div id="stage" class="stage">
 <div class="top">
-  <div class="brand"><span class="dot">🗓️</span> 듀티메이트 <span style="font-weight:400;opacity:.6;font-size:12px;">Nurse Duty</span></div>
-  <span class="pill">🏥 <select id="wardSel"><option>61병동</option><option>62병동</option><option>71병동</option></select></span>
+  <div class="brand"><span class="dot">🗓️</span> 듀티메이트 <span class="bsub" style="font-weight:400;opacity:.6;font-size:12px;">Nurse Duty</span></div>
+  <span class="pill wardpill">🏥 <select id="wardSel"><option>61병동</option><option>62병동</option><option>71병동</option></select></span>
   <div class="sp"></div>
   <span class="pill">역할 <select id="roleSel">
     <option value="admin">관리자(파트장)</option>
     <option value="master">마스터</option>
     <option value="staff">일반(부서원)</option>
   </select></span>
+  <button class="iconbtn" id="deviceBtn" title="모바일 미리보기">📱</button>
   <button class="iconbtn" id="themeBtn" title="테마">◐</button>
   <div class="avatar" id="avatar">파</div>
 </div>
@@ -237,6 +312,8 @@ table.duty{border-collapse:separate;border-spacing:0;font-size:12px;white-space:
   </aside>
 
   <main class="main" id="main"></main>
+</div>
+<nav class="bottomnav" id="bottomnav"></nav>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -283,6 +360,93 @@ function selLabel(){
   if(pickStart===null)return '날짜를 선택하세요 (하루 또는 시작~종료)';
   if(pickEnd===null)return `${mm}월 ${pickStart}일 (1일)`;
   return `${mm}월 ${pickStart}일 ~ ${pickEnd}일 · 총 ${pickEnd-pickStart+1}일`;
+}
+
+/* ===== 모바일 · 기기 ===== */
+let mobileMode=false, previewMobile=false, mView='me', curWeek=0, reqExpired=false;
+const MEname='신유진';
+const STIME={D:'데이 07–15',E:'이브닝 15–22',N:'나이트 22–07',M:'미드',OFF:'휴무(오프)',
+  'M/D':'미드 (전산 D)','M/E':'미드 (전산 E)',HY:'연차',경조:'경조',S:'상근',S1:'상근','.':'근무 없음'};
+function weeksOf(){const {lead,nd}=calMeta();let w=[],c=[];
+  for(let d=1;d<=nd;d++){const dow=(lead+d-1)%7;if(dow===0&&c.length){w.push(c);c=[];}c.push(d);}
+  if(c.length)w.push(c);return w;}
+function moveWeek(d){const w=weeksOf();curWeek=Math.min(w.length-1,Math.max(0,curWeek+d));render();}
+function setMView(v){mView=v;render();}
+
+function renderDutyMobile(){
+  const M=DATA[curMonth],lead=calMeta().lead,weeks=weeksOf();
+  if(curWeek>=weeks.length)curWeek=0;
+  const wk=weeks[curWeek];
+  const me=M.roster.find(n=>n.name===MEname&&!n.mgr)||M.roster.find(n=>!n.mgr);
+  const mm=curMonth.slice(5);
+  const toggle=`<div class="mtoggle">
+    <button class="${mView==='me'?'on':''}" onclick="setMView('me')">🙋 내 근무</button>
+    <button class="${mView==='all'?'on':''}" onclick="setMView('all')">👥 전체 근무</button></div>`;
+  const wknav=`<div class="wknav"><button onclick="moveWeek(-1)">‹</button>
+    <span>${curWeek+1}주 · ${mm}/${wk[0]}~${wk[wk.length-1]}</span>
+    <button onclick="moveWeek(1)">›</button></div>`;
+  let body;
+  if(mView==='me'){
+    body=`<div class="mydays">`+wk.map(d=>{const dow=(lead+d-1)%7,c=me.s[d-1],[cls,lab]=CLASS(c);
+      const off=(c==='OFF'||c==='.');
+      return `<div class="myday${off?' off':''}">
+        <div class="dl"><span class="dw" style="color:${dow===0?'var(--danger)':dow===6?'var(--accent)':'var(--muted)'}">${WKO[dow]}</span><span class="dn">${d}</span></div>
+        <div class="dt">${STIME[c]||c}</div>
+        <div class="dchip ${cls}">${lab}</div></div>`;}).join('')+`</div>`;
+  } else {
+    let head='<tr><th class="nmcol">간호사</th>'+wk.map(d=>{const dow=(lead+d-1)%7,we=dow===0||dow===6;
+      return `<th class="day${we?' we':''}">${d}</th>`;}).join('')+'</tr>';
+    let rows='',lt=null;
+    M.roster.forEach(n=>{if(n.t!==lt){lt=n.t;rows+=`<tr class="grp"><td colspan="${1+wk.length}">${n.t}팀</td></tr>`;}
+      const mine=n.name===me.name;
+      rows+=`<tr class="${mine?'meRow':''}"><td class="nmcol">${mine?'⭐':''}${n.name}</td>`+
+        wk.map(d=>{const c=n.s[d-1],[cls,lab]=CLASS(c),dow=(lead+d-1)%7,we=dow===0||dow===6;
+          return `<td class="day ${cls}${we?' we':''}"><span class="cell">${lab}</span></td>`;}).join('')+'</tr>';});
+    body=`<div class="gridwrap"><div class="gscroll"><table class="duty mini"><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
+  }
+  return `<div class="crumb">61병동 · ${monLabel(curMonth)} · ${MEname}님</div>
+    <div class="h1" style="display:flex;align-items:center;gap:10px">근무표
+      <button class="btn ghost" style="margin-left:auto;padding:6px 11px;font-size:12px" onclick="toast('내보내기: 엑셀 / 이미지')">⬇ 내보내기</button></div>
+    ${toggle}${wknav}${body}
+    <div class="note">${mView==='me'?'내 근무만 크게 · 상단에서 전체 보기 전환':'⭐ 내 행 · 좌우로 스크롤'}</div>`;
+}
+
+function renderRoster(){
+  const src=DATA['2026-08'].roster.filter(n=>!n.mgr).slice(0,10);
+  const exp=['5년','3년','8년','1년','6년','2년','10년','4년','7년','2년'];
+  const comp=['up','mid','up','low','up','mid','up','mid','up','low'];
+  const compL={up:'상',mid:'중',low:'하'};
+  const nightNo=new Set(['1년']); // 신규는 나이트 제외 예시
+  let rows=src.map((n,i)=>`<tr>
+    <td><b>${n.name}</b></td><td class="c">${n.t}팀</td>
+    <td>${exp[i]}${exp[i]==='1년'?' <span style="color:var(--warn);font-size:11px">신규</span>':''}</td>
+    <td class="c"><span class="cbadge ${comp[i]}">${compL[comp[i]]}</span></td>
+    <td class="c">${exp[i]==='1년'?'제외':'가능'}</td>
+    <td style="color:var(--muted)">${i===0?'프리셉터':i===3?'교육중':'—'}</td>
+    <td class="c"><button class="btn ghost" style="padding:4px 9px;font-size:11px" onclick="toast('수정 화면 (시안)')">수정</button></td></tr>`).join('');
+  return `<div class="crumb">61병동 · 부서장 전용</div>
+    <div class="h1" style="display:flex;align-items:center;gap:10px">간호사 상세 명단
+      <button class="btn" style="margin-left:auto;padding:6px 12px;font-size:12px" onclick="toast('간호사 추가 (시안)')">+ 추가</button></div>
+    <div class="lock">🔒 경력·업무능력 등 상세 정보는 <b>부서장(관리자)만 열람</b> — 일반 부서원에게는 비공개됩니다.</div>
+    <div class="gridwrap"><div class="gscroll"><table class="rtable">
+      <thead><tr><th>이름</th><th>팀</th><th>경력</th><th>업무능력</th><th>나이트</th><th>비고</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+
+function renderBottomNav(){
+  const fourth = curRole==='master'?{t:'feedback',i:'✉️',l:'피드백'}
+    :curRole==='staff'?{t:'fbnew',i:'💬',l:'요청'}:{t:'roster',i:'👥',l:'명단'};
+  const items=[{t:'duty',i:'📋',l:'근무표'},{t:'req',i:'✋',l:'오프'},{t:'stat',i:'📊',l:'통계'},fourth];
+  const act=document.querySelector('.nav.active')?.dataset.tab;
+  document.getElementById('bottomnav').innerHTML=items.map(x=>
+    `<div class="bn ${x.t===act?'on':''}" onclick="setActive('${x.t}')"><span class="bi">${x.i}</span>${x.l}</div>`).join('');
+}
+function applyDevice(){
+  const st=document.getElementById('stage');
+  st.classList.toggle('mlayout',mobileMode);
+  st.classList.toggle('bezel',mobileMode&&previewMobile);
+  document.getElementById('deviceBtn').textContent=mobileMode?'🖥️':'📱';
+  render();
 }
 
 const CLASS=c=>{
@@ -344,10 +508,10 @@ function renderDuty(){
     ${[['D','D'],['E','E'],['N','N'],['M','M'],['O','OFF'],['HY','연차']].map(([k,l])=>{const[cl]=CLASS(k==='O'?'OFF':k==='HY'?'HY':k);return `<span class="lg"><span class="chip ${cl}">${l==='OFF'?'O':l==='연차'?'연':l}</span>${({D:'데이',E:'이브닝',N:'나이트',M:'미드',OFF:'오프',HY:'연차'})[k]||l}</span>`}).join('')}
   </div>`;
 
-  const gen = curRole==='staff' ? '' :
+  const gen = (curRole==='staff' ? '' :
     `<button class="btn" onclick="genToast()">✨ 근무표 생성</button>
-     <button class="btn ghost">✏️ 수정</button>
-     <button class="btn ghost">⬇ 내보내기</button>`;
+     <button class="btn ghost">✏️ 수정</button>`)
+    + `<button class="btn ghost" onclick="toast('내보내기: 엑셀(.xlsx) / 이미지 · 범위 선택')">⬇ 내보내기</button>`;
 
   return `<div class="crumb">61병동 · ${monLabel(curMonth)} 근무예정표</div>
     <div class="h1">근무표 (듀티표)</div>
@@ -368,28 +532,37 @@ function renderDuty(){
 function renderReq(){
   if(curRole!=='staff') return renderReqAdmin();
   const chips=['OFF','D','E','N'].map(s=>`<button class="shchip ${selShift===s?'on':''}" onclick="setShift('${s}')"><span class="chip ${CLASS(s)[0]}">${CLASS(s)[1]}</span>${SHIFT_KO[s]}</button>`).join('');
+  const winbar=`<div class="winbar">${reqExpired
+      ?'🔒 <span class="st" style="color:var(--sh-HY-fg)">신청 마감됨</span> · 8/1~8/25'
+      :'🟢 <span class="st">신청 기간</span> · 8/1~8/25 (D-6)'}
+    <button onclick="toggleExpired()">${reqExpired?'열림 상태 보기':'만료 화면 미리보기'}</button></div>`;
+  const formPanel = reqExpired
+    ? `<div class="panel"><div style="font-weight:700;margin-bottom:11px;">새 신청</div>
+        <div class="lock">🔒 <b>신청 기한이 만료되었습니다.</b> 추가 수정 필요 시 부서장에게 직접 문의하세요.</div>
+        <button class="btn" disabled style="opacity:.5;cursor:default">신청하기</button></div>`
+    : `<div class="panel">
+        <div style="font-weight:700;margin-bottom:11px;">새 신청</div>
+        <div class="field"><label>근무 종류</label><div class="shchips">${chips}</div></div>
+        <div class="warn-note">⚠️ <b>오프가 최우선으로 반영됩니다.</b> 데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다.</div>
+        <div class="field"><label>희망 기간 — 하루만, 또는 시작~종료를 눌러 연속으로 선택</label>
+          ${pickerCal()}<div class="sel-label">📅 ${selLabel()}</div></div>
+        <button class="btn" onclick="toast('신청이 접수되었습니다 · 파트장 승인 대기')">신청하기</button>
+        <div class="note">이번 달 신청 2 / 3건 사용</div></div>`;
   return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">원티드 오프 신청</div>
-  <div class="grid2">
-    <div class="panel">
-      <div style="font-weight:700;margin-bottom:11px;">새 신청</div>
-      <div class="field"><label>근무 종류</label><div class="shchips">${chips}</div></div>
-      <div class="warn-note">⚠️ <b>오프가 최우선으로 반영됩니다.</b> 데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다.</div>
-      <div class="field"><label>희망 기간 — 하루만, 또는 시작~종료를 눌러 연속으로 선택</label>
-        ${pickerCal()}
-        <div class="sel-label">📅 ${selLabel()}</div></div>
-      <button class="btn" onclick="toast('신청이 접수되었습니다 · 파트장 승인 대기')">신청하기</button>
-      <div class="note">이번 달 신청 2 / 3건 사용</div>
-    </div>
-    <div class="panel">
-      <div style="font-weight:700;margin-bottom:11px;">내 신청 현황</div>
-      ${viewCal()}
-      <div class="legend" style="margin-top:13px">
-        ${['OFF','N','D','E'].map(s=>`<span class="lg"><span class="chip ${CLASS(s)[0]}">${CLASS(s)[1]}</span>${SHIFT_KO[s]}</span>`).join('')}
+    ${winbar}
+    <div class="grid2">
+      ${formPanel}
+      <div class="panel">
+        <div style="font-weight:700;margin-bottom:11px;">내 신청 현황</div>
+        ${viewCal()}
+        <div class="legend" style="margin-top:13px">
+          ${['OFF','N','D','E'].map(s=>`<span class="lg"><span class="chip ${CLASS(s)[0]}">${CLASS(s)[1]}</span>${SHIFT_KO[s]}</span>`).join('')}
+        </div>
+        <div class="note" style="margin-top:11px">반영률: 이번 달 16/18건 (89%) · 오프 4건 모두 반영</div>
       </div>
-      <div class="note" style="margin-top:11px">반영률: 이번 달 16/18건 (89%) · 오프 4건 모두 반영</div>
-    </div>
-  </div>`;
+    </div>`;
 }
+function toggleExpired(){reqExpired=!reqExpired;render();}
 function renderReqAdmin(){
   return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">원티드 오프 신청 · 승인</div>
   <div class="mocknote">부서원 신청을 검토·승인하세요. 신청 기간(윈도우)은 병동 설정에서 통제 · 오프 최우선 반영</div>
@@ -460,13 +633,15 @@ function renderSimple(t){
 function render(){
   const t=document.querySelector('.nav.active')?.dataset.tab||'duty';
   let html;
-  if(t==='duty')html=renderDuty();
+  if(t==='duty')html=mobileMode?renderDutyMobile():renderDuty();
   else if(t==='req')html=renderReq();
   else if(t==='stat')html=renderStat();
   else if(t==='feedback')html=renderFeedback();
   else if(t==='fbnew')html=renderFbNew();
+  else if(t==='roster')html=renderRoster();
   else html=renderSimple(t);
   document.getElementById('main').innerHTML=html;
+  renderBottomNav();
 }
 function applyRole(){
   document.querySelectorAll('[data-role]').forEach(el=>{
@@ -493,5 +668,9 @@ function moveMonth(d){const i=months.indexOf(curMonth);const ni=Math.min(months.
 let tt;
 function toast(m){const el=document.getElementById('toast');el.textContent=m;el.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2200);}
 function genToast(){toast('⏳ 근무표를 생성하는 중...');setTimeout(()=>toast('✅ 근무표 생성 완료 · 대원칙 위반 0건'),900);}
+document.getElementById('deviceBtn').onclick=()=>{previewMobile=true;mobileMode=!mobileMode;if(!mobileMode)previewMobile=false;applyDevice();};
+window.addEventListener('resize',()=>{if(!previewMobile){const m=window.innerWidth<=640;if(m!==mobileMode){mobileMode=m;applyDevice();}}});
+if(window.innerWidth<=640)mobileMode=true;
 applyRole();
+applyDevice();
 </script>
