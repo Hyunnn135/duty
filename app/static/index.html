@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>간호사 근무표 자동 생성</title>
+<style>
+  :root {
+    --d: #2563eb; --e: #d97706; --n: #7c3aed; --o: #94a3b8;
+    --bg: #f8fafc; --card: #fff; --border: #e2e8f0; --text: #1e293b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  header { background: #0f172a; color: #fff; padding: 20px 24px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: #94a3b8; font-size: 13px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; margin-bottom: 20px;
+  }
+  .card h2 { margin: 0 0 16px; font-size: 15px; }
+  .grid { display: grid; gap: 14px; }
+  .grid.cols { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #475569; }
+  input, textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 8px; font-size: 14px; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    background: var(--d); color: #fff; border: none; padding: 11px 22px;
+    border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { opacity: .55; cursor: default; }
+  .hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: center; }
+  th { background: #f1f5f9; font-weight: 600; }
+  td.name { text-align: left; font-weight: 600; white-space: nowrap; }
+  .cell { font-weight: 700; border-radius: 4px; display: inline-block; width: 22px; }
+  .D { color: var(--d); } .E { color: var(--e); }
+  .N { color: var(--n); } .O { color: var(--o); }
+  .scroll { overflow-x: auto; }
+  .status { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+  .status.ok { background: #dcfce7; color: #166534; }
+  .status.err { background: #fee2e2; color: #991b1b; }
+  .legend { font-size: 12px; color: #64748b; margin-top: 12px; }
+  .legend b.D { color: var(--d); } .legend b.E { color: var(--e); }
+  .legend b.N { color: var(--n); } .legend b.O { color: var(--o); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏥 간호사 근무표 자동 생성</h1>
+  <p>OR-Tools CP-SAT · 3교대(D/E/N) 제약조건 최적화</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>기본 설정</h2>
+    <div class="grid cols">
+      <div>
+        <label>배정 일수</label>
+        <input type="number" id="numDays" value="14" min="1" max="62" />
+      </div>
+      <div>
+        <label>Day 최소 인원</label>
+        <input type="number" id="minD" value="2" min="0" />
+      </div>
+      <div>
+        <label>Evening 최소 인원</label>
+        <input type="number" id="minE" value="2" min="0" />
+      </div>
+      <div>
+        <label>Night 최소 인원</label>
+        <input type="number" id="minN" value="1" min="0" />
+      </div>
+      <div>
+        <label>연속 근무 최대일</label>
+        <input type="number" id="maxCons" value="5" min="1" />
+      </div>
+      <div>
+        <label>연속 나이트 최대일</label>
+        <input type="number" id="maxNight" value="3" min="1" />
+      </div>
+      <div>
+        <label>간호사별 최소 오프</label>
+        <input type="number" id="minOff" value="4" min="0" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>간호사 명단</h2>
+    <label>한 줄에 한 명씩 이름을 입력하세요.</label>
+    <textarea id="nurses">김민지
+이서준
+박지우
+최유나
+정하은
+강도윤
+윤지호
+임채원</textarea>
+  </div>
+
+  <div class="card">
+    <h2>개인 희망 / 연차 (선택)</h2>
+    <label>한 줄에 하나씩. 형식: <code>이름, 날짜(1부터), 교대(D/E/N/O), 종류(prefer/forbid)</code></label>
+    <textarea id="requests" placeholder="예)
+김민지, 3, O, prefer
+이서준, 5, N, forbid"></textarea>
+    <div class="hint">prefer = 되도록 반영, forbid = 반드시 배정 금지(예: 승인된 연차는 그날 근무 forbid)</div>
+  </div>
+
+  <button id="genBtn" onclick="generate()">근무표 생성</button>
+
+  <div id="result" style="margin-top: 24px;"></div>
+</div>
+
+<script>
+const SHIFTS = ["D", "E", "N", "O"];
+
+function parseNurses() {
+  return document.getElementById("nurses").value
+    .split("\n").map(s => s.trim()).filter(Boolean)
+    .map((name, i) => ({ id: "n" + i, name }));
+}
+
+function parseRequests(nurses) {
+  const byName = Object.fromEntries(nurses.map(n => [n.name, n.id]));
+  const out = [];
+  for (const line of document.getElementById("requests").value.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    const parts = t.split(",").map(s => s.trim());
+    if (parts.length < 3) continue;
+    const [name, dayStr, shift, type] = parts;
+    if (!byName[name]) continue;
+    const day = parseInt(dayStr, 10) - 1; // 1-based -> 0-based
+    if (isNaN(day) || !SHIFTS.includes(shift)) continue;
+    out.push({
+      nurse_id: byName[name], day, shift,
+      type: (type === "forbid" ? "forbid" : "prefer"),
+    });
+  }
+  return out;
+}
+
+async function generate() {
+  const btn = document.getElementById("genBtn");
+  const result = document.getElementById("result");
+  const nurses = parseNurses();
+  if (nurses.length === 0) {
+    result.innerHTML = '<div class="status err">간호사를 한 명 이상 입력하세요.</div>';
+    return;
+  }
+  const payload = {
+    num_days: parseInt(document.getElementById("numDays").value, 10),
+    nurses,
+    min_staff: {
+      D: parseInt(document.getElementById("minD").value, 10),
+      E: parseInt(document.getElementById("minE").value, 10),
+      N: parseInt(document.getElementById("minN").value, 10),
+    },
+    max_consecutive_days: parseInt(document.getElementById("maxCons").value, 10),
+    max_consecutive_nights: parseInt(document.getElementById("maxNight").value, 10),
+    min_off_days: parseInt(document.getElementById("minOff").value, 10),
+    requests: parseRequests(nurses),
+  };
+
+  btn.disabled = true;
+  btn.textContent = "생성 중...";
+  result.innerHTML = '<div class="status">⏳ 최적 근무표를 계산하고 있습니다...</div>';
+  try {
+    const res = await fetch("/api/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    render(data, payload.num_days);
+  } catch (e) {
+    result.innerHTML = '<div class="status err">요청 실패: ' + e + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "근무표 생성";
+  }
+}
+
+function render(data, numDays) {
+  const result = document.getElementById("result");
+  if (!data.feasible) {
+    result.innerHTML = '<div class="status err">❌ ' + (data.message || "생성 실패") + '</div>';
+    return;
+  }
+  let html = '<div class="status ok">✅ ' + data.message +
+    ' · 미반영 희망: ' + data.unmet_preferences + '건</div>';
+  html += '<div class="card scroll"><table><thead><tr><th>간호사</th>';
+  for (let d = 1; d <= numDays; d++) html += '<th>' + d + '</th>';
+  html += '<th>D</th><th>E</th><th>N</th><th>O</th></tr></thead><tbody>';
+  for (const sch of data.schedules) {
+    html += '<tr><td class="name">' + sch.name + '</td>';
+    for (const s of sch.shifts) {
+      const cls = s === "O" ? "O" : s;
+      html += '<td><span class="cell ' + cls + '">' + s + '</span></td>';
+    }
+    html += '<td>' + sch.counts.D + '</td><td>' + sch.counts.E +
+      '</td><td>' + sch.counts.N + '</td><td>' + sch.counts.O + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  html += '<div class="legend"><b class="D">D</b> 데이 · <b class="E">E</b> 이브닝 · ' +
+    '<b class="N">N</b> 나이트 · <b class="O">O</b> 오프</div></div>';
+  result.innerHTML = html;
+}
+</script>
+</body>
+</html>
