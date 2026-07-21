@@ -1,0 +1,410 @@
+<style>
+:root{
+  --page:#eceff1; --panel:#fff; --ink:#16242b; --muted:#617079; --line:#e3e9ec;
+  --accent:#0f6d7a; --accent-2:#12828f; --accent-soft:#e4f1f2;
+  --topbar:#0e343c; --topbar-ink:#e9f4f5; --topbar-line:#1c4b54;
+  --side:#f5f7f8; --side-ink:#3a4a52; --good:#1f8a54; --warn:#b5731a; --danger:#b23a48;
+  --sh-D-bg:#fbe9cd;--sh-D-fg:#8a5300; --sh-E-bg:#d3edef;--sh-E-fg:#0a5b65;
+  --sh-N-bg:#e2dcf6;--sh-N-fg:#3a2c86; --sh-M-bg:#d6eddd;--sh-M-fg:#1f6a41;
+  --sh-O-bg:#e9edf0;--sh-O-fg:#7c8a95;
+  --sh-HY-bg:#fadfe9;--sh-HY-fg:#9a2b54; --sh-X-bg:#efe8dc;--sh-X-fg:#6b5a3f;
+  --sh-S-bg:#e6ebef;--sh-S-fg:#58636d;
+  --we:rgba(15,109,122,.055);
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --page:#0c1316; --panel:#141d21; --ink:#e6eef0; --muted:#8a99a0; --line:#243035;
+  --accent:#3fb1c1; --accent-2:#54c6d6; --accent-soft:#12333a;
+  --topbar:#0a2328; --topbar-ink:#dff1f3; --topbar-line:#17414a;
+  --side:#101a1e; --side-ink:#a7b6bd;
+  --sh-D-bg:#4a3a13;--sh-D-fg:#f6d79c; --sh-E-bg:#123f45;--sh-E-fg:#93dbe3;
+  --sh-N-bg:#2c2559;--sh-N-fg:#c9bff4; --sh-M-bg:#173f2b;--sh-M-fg:#8fd9ab;
+  --sh-O-bg:#1c262b;--sh-O-fg:#8595a0; --sh-HY-bg:#45222f;--sh-HY-fg:#f2a9c2;
+  --sh-X-bg:#3a3122;--sh-X-fg:#d6c19a; --sh-S-bg:#212c31;--sh-S-fg:#9fb0b8;
+  --we:rgba(63,177,193,.07);
+}}
+:root[data-theme="dark"]{
+  --page:#0c1316; --panel:#141d21; --ink:#e6eef0; --muted:#8a99a0; --line:#243035;
+  --accent:#3fb1c1; --accent-2:#54c6d6; --accent-soft:#12333a;
+  --topbar:#0a2328; --topbar-ink:#dff1f3; --topbar-line:#17414a;
+  --side:#101a1e; --side-ink:#a7b6bd;
+  --sh-D-bg:#4a3a13;--sh-D-fg:#f6d79c; --sh-E-bg:#123f45;--sh-E-fg:#93dbe3;
+  --sh-N-bg:#2c2559;--sh-N-fg:#c9bff4; --sh-M-bg:#173f2b;--sh-M-fg:#8fd9ab;
+  --sh-O-bg:#1c262b;--sh-O-fg:#8595a0; --sh-HY-bg:#45222f;--sh-HY-fg:#f2a9c2;
+  --sh-X-bg:#3a3122;--sh-X-fg:#d6c19a; --sh-S-bg:#212c31;--sh-S-fg:#9fb0b8;
+  --we:rgba(63,177,193,.07);
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;}
+button{font-family:inherit;cursor:pointer;}
+
+/* Top bar */
+.top{background:var(--topbar);color:var(--topbar-ink);display:flex;align-items:center;
+  gap:16px;padding:0 18px;height:56px;border-bottom:1px solid var(--topbar-line);
+  position:sticky;top:0;z-index:50;}
+.brand{display:flex;align-items:center;gap:9px;font-weight:750;font-size:15px;letter-spacing:-.01em;}
+.brand .dot{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--accent-2),var(--accent));font-size:13px;}
+.top .sp{flex:1;}
+.pill{background:rgba(255,255,255,.09);border:1px solid var(--topbar-line);color:var(--topbar-ink);
+  border-radius:8px;padding:6px 11px;font-size:12.5px;display:inline-flex;align-items:center;gap:7px;}
+.pill select{background:transparent;border:0;color:inherit;font:inherit;outline:none;}
+.pill select option{color:#111;}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;
+  display:grid;place-items:center;font-size:12px;font-weight:700;}
+.iconbtn{background:rgba(255,255,255,.08);border:1px solid var(--topbar-line);color:inherit;
+  width:32px;height:32px;border-radius:8px;font-size:14px;display:grid;place-items:center;}
+
+/* Shell */
+.shell{display:flex;min-height:calc(100vh - 56px);}
+.side{width:210px;flex-shrink:0;background:var(--side);border-right:1px solid var(--line);
+  padding:14px 10px;display:flex;flex-direction:column;gap:3px;}
+.nav{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:9px;color:var(--side-ink);
+  font-size:13.5px;font-weight:550;border:1px solid transparent;}
+.nav .ic{width:17px;text-align:center;opacity:.85;}
+.nav:hover{background:var(--panel);}
+.nav.active{background:var(--panel);color:var(--accent);border-color:var(--line);font-weight:700;}
+.nav.hide{display:none;}
+.side .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);
+  margin:14px 11px 5px;}
+
+.main{flex:1;min-width:0;padding:18px 22px 40px;}
+.crumb{font-size:12px;color:var(--muted);margin-bottom:3px;}
+.h1{font-size:20px;font-weight:750;letter-spacing:-.01em;margin:0 0 2px;}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0 12px;}
+.mnav{display:inline-flex;align-items:center;gap:2px;background:var(--panel);border:1px solid var(--line);
+  border-radius:9px;padding:3px;}
+.mnav button{background:transparent;border:0;color:var(--ink);padding:5px 8px;border-radius:6px;font-size:13px;}
+.mnav .cur{font-weight:700;padding:5px 10px;min-width:96px;text-align:center;}
+.mnav button:hover{background:var(--accent-soft);}
+.btn{background:var(--accent);color:#fff;border:0;padding:8px 15px;border-radius:9px;
+  font-size:13px;font-weight:650;display:inline-flex;align-items:center;gap:7px;}
+.btn:hover{background:var(--accent-2);}
+.btn.ghost{background:var(--panel);color:var(--ink);border:1px solid var(--line);}
+.btn.ghost:hover{border-color:var(--accent);color:var(--accent);}
+.sp{flex:1;}
+.legend{display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:var(--muted);}
+.lg{display:inline-flex;align-items:center;gap:5px;}
+.chip{width:20px;height:17px;border-radius:4px;display:grid;place-items:center;font-size:10.5px;font-weight:800;}
+.chip.sh-D{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.chip.sh-E{background:var(--sh-E-bg);color:var(--sh-E-fg);}
+.chip.sh-N{background:var(--sh-N-bg);color:var(--sh-N-fg);}
+.chip.sh-M{background:var(--sh-M-bg);color:var(--sh-M-fg);}
+.chip.sh-O{background:var(--sh-O-bg);color:var(--sh-O-fg);}
+.chip.sh-HY{background:var(--sh-HY-bg);color:var(--sh-HY-fg);}
+
+/* stat cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px;}
+.card .k{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px;}
+.card .v{font-size:23px;font-weight:750;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+.card .s{font-size:11px;color:var(--muted);margin-top:2px;}
+.dotc{width:8px;height:8px;border-radius:50%;}
+
+/* grid */
+.gridwrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+.gscroll{overflow-x:auto;}
+table.duty{border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap;}
+.duty th,.duty td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);
+  padding:0;height:30px;text-align:center;font-variant-numeric:tabular-nums;}
+.duty thead th{position:sticky;top:0;background:var(--panel);z-index:3;font-weight:650;color:var(--muted);
+  height:24px;font-size:11px;}
+.duty thead tr.wd th{height:20px;font-size:10.5px;font-weight:600;}
+.duty .nmcol{position:sticky;left:0;z-index:4;background:var(--panel);text-align:left;
+  padding:0 10px;min-width:118px;font-weight:600;border-right:2px solid var(--line);}
+.duty thead .nmcol{z-index:6;}
+.duty td.nmcol{color:var(--ink);}
+.duty td.day{width:30px;min-width:30px;}
+.duty .we{background:var(--we);}
+.duty td.we,.duty th.we{background-image:linear-gradient(var(--we),var(--we));}
+.cell{width:100%;height:100%;display:grid;place-items:center;font-weight:800;font-size:11px;}
+.sh-D .cell{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.sh-E .cell{background:var(--sh-E-bg);color:var(--sh-E-fg);}
+.sh-N .cell{background:var(--sh-N-bg);color:var(--sh-N-fg);}
+.sh-M .cell{background:var(--sh-M-bg);color:var(--sh-M-fg);}
+.sh-O .cell{background:var(--sh-O-bg);color:var(--sh-O-fg);font-weight:600;}
+.sh-HY .cell{background:var(--sh-HY-bg);color:var(--sh-HY-fg);font-size:10px;}
+.sh-X .cell{background:var(--sh-X-bg);color:var(--sh-X-fg);font-size:9px;}
+.sh-S .cell{background:var(--sh-S-bg);color:var(--sh-S-fg);}
+.sh-C .cell{background:var(--sh-M-bg);color:var(--sh-M-fg);font-size:9px;position:relative;}
+.sh-C .cell::after{content:"";position:absolute;top:2px;right:2px;width:4px;height:4px;border-radius:50%;background:var(--good);}
+.duty tr.grp td{position:sticky;left:0;background:var(--accent-soft);color:var(--accent);
+  text-align:left;padding:3px 10px;font-size:11px;font-weight:750;letter-spacing:.02em;
+  border-right:0;z-index:2;}
+.duty .tot{background:var(--panel);color:var(--muted);font-weight:700;width:26px;min-width:26px;font-size:11px;}
+.duty thead .tot{color:var(--muted);}
+.duty td.tot.tD{color:var(--sh-D-fg);}
+.duty td.tot.tN{color:var(--sh-N-fg);}
+.duty tfoot td{position:sticky;bottom:0;background:var(--panel);font-weight:700;color:var(--muted);
+  border-top:2px solid var(--line);height:24px;font-size:11px;}
+.duty tfoot td.nmcol{color:var(--ink);z-index:4;}
+.mgrrow td.nmcol{color:var(--muted);}
+.mgrrow .cell{opacity:.75;}
+
+.note{font-size:11.5px;color:var(--muted);margin-top:10px;display:flex;gap:8px;align-items:center;}
+
+/* generic panels for other tabs */
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;}
+.grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start;}
+@media(max-width:860px){.grid2{grid-template-columns:1fr;}}
+.field{margin-bottom:13px;}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px;}
+.field input,.field textarea,.field select{width:100%;padding:9px 11px;border:1px solid var(--line);
+  border-radius:9px;background:var(--page);color:var(--ink);font:inherit;font-size:13px;}
+.req{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:10px;margin-bottom:9px;background:var(--page);}
+.req .who{font-weight:650;font-size:13px;}
+.req .meta{font-size:11.5px;color:var(--muted);}
+.badge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;}
+.badge.wait{background:var(--sh-D-bg);color:var(--sh-D-fg);}
+.badge.ok{background:var(--sh-M-bg);color:var(--sh-M-fg);}
+.mini-actions{margin-left:auto;display:flex;gap:6px;}
+.bar{height:9px;border-radius:6px;background:var(--accent-soft);overflow:hidden;}
+.bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));}
+.statrow{display:grid;grid-template-columns:70px 1fr 34px;gap:10px;align-items:center;font-size:12.5px;margin-bottom:8px;}
+.statrow .n{font-variant-numeric:tabular-nums;color:var(--muted);text-align:right;}
+.hide{display:none!important;}
+
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--ink);color:var(--panel);padding:11px 18px;border-radius:10px;font-size:13px;
+  font-weight:600;opacity:0;transition:.3s;z-index:100;box-shadow:0 6px 24px rgba(0,0,0,.2);}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0);}
+.mocknote{background:var(--accent-soft);border:1px solid var(--line);border-radius:10px;
+  padding:9px 13px;font-size:11.5px;color:var(--accent);margin-bottom:14px;display:flex;gap:8px;align-items:center;}
+</style>
+
+<div class="top">
+  <div class="brand"><span class="dot">🗓️</span> 듀티메이트 <span style="font-weight:400;opacity:.6;font-size:12px;">Nurse Duty</span></div>
+  <span class="pill">🏥 <select id="wardSel"><option>61병동</option><option>62병동</option><option>71병동</option></select></span>
+  <div class="sp"></div>
+  <span class="pill">역할 <select id="roleSel">
+    <option value="admin">관리자(파트장)</option>
+    <option value="master">마스터</option>
+    <option value="staff">일반(부서원)</option>
+  </select></span>
+  <button class="iconbtn" id="themeBtn" title="테마">◐</button>
+  <div class="avatar" id="avatar">파</div>
+</div>
+
+<div class="shell">
+  <aside class="side">
+    <div class="lbl">근무</div>
+    <div class="nav active" data-tab="duty"><span class="ic">📋</span> 근무표</div>
+    <div class="nav" data-tab="req"><span class="ic">✋</span> 원티드 오프</div>
+    <div class="nav" data-tab="stat"><span class="ic">📊</span> 통계</div>
+    <div class="lbl" data-role="admin master">관리</div>
+    <div class="nav" data-tab="roster" data-role="admin master"><span class="ic">👥</span> 간호사 명단</div>
+    <div class="nav" data-tab="settings" data-role="admin master"><span class="ic">⚙️</span> 병동 설정</div>
+    <div class="lbl" data-role="master">마스터</div>
+    <div class="nav" data-tab="feedback" data-role="master"><span class="ic">✉️</span> 피드백 수신함 <span id="fbcount" style="margin-left:auto;background:var(--danger);color:#fff;font-size:10px;border-radius:10px;padding:0 6px;">3</span></div>
+    <div class="nav" data-tab="wards" data-role="master"><span class="ic">🏥</span> 병동 관리</div>
+    <div style="flex:1"></div>
+    <div class="nav" data-tab="fbnew" data-role="staff admin"><span class="ic">💬</span> 요청/문의 남기기</div>
+  </aside>
+
+  <main class="main" id="main"></main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const DATA={"2026-07": {"first": "수", "roster": [{"t": 1, "name": "김은미", "no": "100360", "mgr": true, "s": ["S", "S1", "S", "S1", "OFF", "S", "S", "S", "S", "S", "OFF", "OFF", "S", "S", "S", "S", "S1", "S1", "OFF", "S", "S", "S", "S", "S", "OFF", "OFF", "S", "S", "S", "S", "S"]}, {"t": 1, "name": "신유진", "no": "100275", "mgr": false, "s": ["D", "D", "OFF", "E", "E", "E", "E", "OFF", "D", "OFF", "N", "N", "N", "OFF", "OFF", "D", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "D", "D", "D", "OFF", "D", "D"]}, {"t": 1, "name": "이정욱", "no": "100265", "mgr": false, "s": ["OFF", "D", "D", "D", "OFF", "D", "D", "D", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "HY", "OFF", "D", "E", "OFF", "D", "D", "N", "N", "N", "OFF", "OFF", "D", "E", "OFF"]}, {"t": 1, "name": "장예진", "no": "100373", "mgr": false, "s": ["E", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "HY", "N", "N", "N", "OFF", "OFF", "D", "D", "D", "D", "OFF", "D", "D", "E", "E", "OFF", "OFF", "E"]}, {"t": 1, "name": "한지호", "no": "100268", "mgr": false, "s": ["HY", "E", "E", "HY", "OFF", "N", "N", "N", "OFF", "OFF", "HY", "D", "D", "D", "D", "OFF", "D", "D", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF"]}, {"t": 1, "name": "한지원", "no": "100274", "mgr": false, "s": ["N", "N", "OFF", "OFF", "D", "D", "D", "D", "OFF", "D", "D", "D", "HY", "OFF", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "E", "E", "OFF", "E", "E", "N", "N"]}, {"t": 1, "name": "구민주", "no": "100591", "mgr": false, "s": ["E", "M", "M", "N", "N", "OFF", "OFF", "E", "HY", "D", "D", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "OFF", "N", "N", "OFF", "OFF", "M/D", "D", "D", "D"]}, {"t": 1, "name": "김에스더", "no": "100698", "mgr": false, "s": ["D", "D", "OFF", "E", "E", "E", "E", "OFF", "D", "OFF", "경조", "N", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", "."]}, {"t": 1, "name": "강유빈", "no": "100704", "mgr": false, "s": ["OFF", "D", "D", "D", "OFF", "D", "D", "D", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "OFF", "D", "D", "E", "OFF", "D", "D", "N", "N", "N", "OFF", "OFF", "D", "E", "OFF"]}, {"t": 2, "name": "장현진", "no": "100264", "mgr": false, "s": ["D", "E", "E", "E", "OFF", "D", "D", "D", "E", "OFF", "D", "D", "OFF", "OFF", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "N", "N"]}, {"t": 2, "name": "한혜수", "no": "100503", "mgr": false, "s": ["OFF", "HY", "HY", "D", "D", "N", "N", "OFF", "OFF", "D", "E", "OFF", "E", "N", "N", "OFF", "OFF", "D", "N", "N", "N", "OFF", "OFF", "D", "E", "E", "OFF", "E", "E", "E", "E"]}, {"t": 2, "name": "정서인", "no": "100269", "mgr": false, "s": ["N", "N", "OFF", "E", "E", "HY", "HY", "N", "N", "N", "OFF", "HY", "D", "D", "D", "OFF", "N", "N", "OFF", "OFF", "D", "D", "D", "OFF", "D", "D", "OFF", "D", "D", "OFF", "OFF"]}, {"t": 2, "name": "문수연", "no": "100612", "mgr": false, "s": ["E", "OFF", "D", "N", "N", "OFF", "E", "E", "E", "OFF", "E", "E", "OFF", "OFF", "OFF", "D", "D", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "E", "M/E", "M/E", "N", "N"]}, {"t": 2, "name": "유현석", "no": "100602", "mgr": false, "s": ["N", "N", "N", "OFF", "OFF", "E", "E", "OFF", "D", "E", "N", "N", "N", "OFF", "OFF", "M/E", "E", "E", "OFF", "D", "D", "E", "OFF", "D", "OFF", "OFF", "D", "D", "D", "D", "D"]}, {"t": 2, "name": "권희원", "no": "100604", "mgr": false, "s": ["D", "D", "OFF", "D", "E", "HY", "HY", "N", "N", "N", "OFF", "OFF", "D", "D", "E", "E", "E", "OFF", "OFF", "N", "N", "OFF", "E", "M/E", "OFF", "D", "D", "N", "N", "OFF", "OFF"]}, {"t": 2, "name": "유수미", "no": "100589", "mgr": false, "s": ["HY", "HY", "D", "M", "OFF", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "D", "N", "N", "N", "OFF", "OFF", "M/D", "OFF", "E", "N", "N", "OFF", "OFF", "M/D", "M/D", "M/D"]}, {"t": 2, "name": "김민신", "no": "100703", "mgr": false, "s": ["OFF", "E", "E", "E", "OFF", "D", "D", "D", "E", "OFF", "D", "D", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", ".", "."]}, {"t": 3, "name": "안현영", "no": "100266", "mgr": false, "s": ["OFF", "D", "E", "E", "HY", "N", "N", "OFF", "OFF", "D", "HY", "OFF", "D", "D", "D", "D", "D", "OFF", "N", "N", "OFF", "OFF", "E", "E", "E", "N", "N", "OFF", "OFF", "E", "E"]}, {"t": 3, "name": "채수빈", "no": "100417", "mgr": false, "s": ["OFF", "OFF", "D", "D", "D", "D", "D", "OFF", "D", "E", "HY", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "E", "OFF", "D", "D", "D", "D", "OFF", "N", "N", "N", "OFF"]}, {"t": 3, "name": "이지은", "no": "100378", "mgr": false, "s": ["E", "OFF", "N", "N", "N", "OFF", "OFF", "D", "D", "N", "N", "N", "OFF", "OFF", "D", "E", "E", "OFF", "D", "D", "OFF", "E", "E", "E", "OFF", "E", "E", "E", "E", "E", "OFF"]}, {"t": 3, "name": "김유진", "no": "100271", "mgr": false, "s": ["D", "E", "OFF", "HY", "E", "E", "E", "E", "E", "OFF", "D", "D", "OFF", "E", "E", "N", "N", "N", "OFF", "OFF", "D", "D", "N", "N", "N", "OFF", "OFF", "OFF", "OFF", "D", "D"]}, {"t": 3, "name": "강고은", "no": "100453", "mgr": false, "s": ["OFF", "E", "E", "HY", "D", "E", "OFF", "N", "N", "OFF", "E", "E", "E", "E", "HY", "OFF", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "OFF", "N"]}, {"t": 3, "name": "성시은", "no": "100603", "mgr": false, "s": ["N", "N", "N", "OFF", "OFF", "M", "M", "OFF", "OFF", "M", "N", "N", "N", "OFF", "OFF", "OFF", "D", "E", "M/E", "M/E", "M/E", "OFF", "D", "D", "D", "E", "E", "OFF", "E", "E", "E"]}, {"t": 3, "name": "강소영", "no": "100705", "mgr": false, "s": ["OFF", "D", "E", "E", "OFF", "N", "N", "OFF", "OFF", "D", "D", "OFF", "D", "D", "D", "D", "OFF", "D", "N", "N", "HY", "OFF", "E", "E", "E", "N", "N", "OFF", "OFF", "E", "E"]}, {"t": 3, "name": "양연주", "no": "100699", "mgr": false, "s": ["D", "OFF", "D", "D", "D", "D", "D", "OFF", "D", "E", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "M/D", "M/D", "D", "D", "D", "OFF", "N", "N", "N", "OFF"]}]}, "2026-08": {"first": "토", "roster": [{"t": 1, "name": "김은미", "no": "100360", "mgr": true, "s": ["OFF", "OFF", "S", "S", "S", "S", "S", "S1", "OFF", "S", "S", "S", "S", "S", "S", "OFF", "S1", "OFF", "S", "S", "S", "S", "S1", "OFF", "S", "S", "S", "S", "OFF", "OFF", "S"]}, {"t": 1, "name": "신유진", "no": "100275", "mgr": false, "s": ["OFF", "OFF", "D", "D", "D", "OFF", "D", "D", "OFF", "D", "D", "D", "D", "OFF", "E", "N", "N", "OFF", "OFF", "OFF", "E", "E", "E", "OFF", "OFF", "OFF", "D", "D", "N", "N", "N"]}, {"t": 1, "name": "이정욱", "no": "100265", "mgr": false, "s": ["N", "N", "N", "OFF", "OFF", "D", "E", "E", "OFF", "OFF", "E", "E", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "D", "D", "OFF", "E", "E", "E", "E", "OFF", "OFF", "OFF", "E"]}, {"t": 1, "name": "장예진", "no": "100373", "mgr": false, "s": ["E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "OFF", "OFF", "OFF", "D", "D", "D", "D", "OFF", "E", "E", "E", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "D", "D", "D"]}, {"t": 1, "name": "한지호", "no": "100268", "mgr": false, "s": ["D", "D", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "OFF", "E", "E", "E", "OFF"]}, {"t": 1, "name": "한지원", "no": "100274", "mgr": false, "s": ["OFF", "OFF", "E", "E", "E", "E", "OFF", "D", "D", "N", "N", "N", "OFF", "OFF", "D", "E", "E", "E", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "HY", "OFF"]}, {"t": 1, "name": "권희원", "no": "100604", "mgr": false, "s": ["D", "D", "D", "OFF", "D", "D", "OFF", "E", "OFF", "HY", "OFF", "N", "N", "OFF", "OFF", "D", "D", "E", "E", "E", "OFF", "D", "D", "OFF", "OFF", "E", "N", "N", "N", "OFF", "OFF"]}, {"t": 1, "name": "구민주", "no": "100591", "mgr": false, "s": ["E", "OFF", "D", "D", "OFF", "OFF", "D", "OFF", "D", "D", "OFF", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "M", "D", "D", "OFF", "OFF", "HY", "HY", "N", "N"]}, {"t": 1, "name": "강유빈", "no": "100704", "mgr": false, "s": ["M", "M", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "OFF", "E", "E", "E", "E", "OFF", "D", "D", "D", "M", "OFF", "OFF", "OFF", "D", "D", "N", "N", "OFF", "OFF", "OFF"]}, {"t": 2, "name": "장현진", "no": "100264", "mgr": false, "s": ["OFF", "OFF", "D", "D", "D", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "OFF", "E", "E", "N", "N", "N", "OFF", "OFF", "D", "D", "D", "D"]}, {"t": 2, "name": "한혜수", "no": "100503", "mgr": false, "s": ["E", "OFF", "OFF", "D", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "D", "OFF", "D", "E", "E", "E", "E", "OFF", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "OFF"]}, {"t": 2, "name": "정서인", "no": "100269", "mgr": false, "s": ["D", "D", "N", "N", "OFF", "OFF", "E", "HY", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "D", "D", "OFF", "OFF", "OFF", "D", "D", "D", "OFF", "E", "E", "E"]}, {"t": 2, "name": "문수연", "no": "100612", "mgr": false, "s": ["OFF", "OFF", "OFF", "HY", "OFF", "D", "D", "D", "D", "D", "OFF", "OFF", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "N", "N", "N"]}, {"t": 2, "name": "유현석", "no": "100602", "mgr": false, "s": ["OFF", "E", "E", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "E", "OFF", "OFF", "HY", "N", "N", "N", "OFF", "OFF", "OFF", "D", "E", "E", "OFF", "E", "E"]}, {"t": 2, "name": "유수미", "no": "100589", "mgr": false, "s": ["N", "N", "OFF", "OFF", "D", "E", "OFF", "D", "D", "D", "E", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "D", "D", "E", "OFF", "D"]}, {"t": 3, "name": "안현영", "no": "100266", "mgr": false, "s": ["N", "N", "OFF", "OFF", "E", "N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "D", "D", "D", "D", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "E", "HY", "OFF", "E"]}, {"t": 3, "name": "채수빈", "no": "100417", "mgr": false, "s": ["OFF", "D", "D", "HY", "OFF", "D", "E", "N", "N", "N", "OFF", "OFF", "E", "E", "OFF", "OFF", "E", "E", "E", "E", "OFF", "OFF", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF"]}, {"t": 3, "name": "이지은", "no": "100378", "mgr": false, "s": ["OFF", "OFF", "E", "E", "OFF", "OFF", "D", "D", "E", "OFF", "D", "D", "D", "N", "N", "OFF", "OFF", "D", "D", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "E", "E"]}, {"t": 3, "name": "김유진", "no": "100271", "mgr": false, "s": ["D", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "D", "D", "OFF", "OFF", "D", "E", "OFF", "OFF", "OFF", "E", "E", "E", "E", "E", "OFF", "OFF", "E", "E", "E", "N", "N"]}, {"t": 3, "name": "강고은", "no": "100453", "mgr": false, "s": ["OFF", "OFF", "OFF", "D", "D", "E", "E", "E", "OFF", "OFF", "N", "N", "N", "OFF", "OFF", "M", "E", "N", "N", "N", "OFF", "OFF", "OFF", "D", "E", "E", "OFF", "D", "D", "D", "D"]}, {"t": 3, "name": "성시은", "no": "100603", "mgr": false, "s": ["E", "E", "OFF", "OFF", "OFF", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "OFF", "D", "D", "D", "D", "D", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "D", "HY"]}, {"t": 3, "name": "강소영", "no": "100705", "mgr": false, "s": ["N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "E", "E", "E", "OFF", "D", "D", "M", "OFF", "N", "N", "N", "OFF", "OFF", "OFF", "D", "E", "E", "N", "N", "OFF", "OFF", "E", "OFF"]}, {"t": 3, "name": "양연주", "no": "100699", "mgr": false, "s": ["OFF", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "D", "D", "D", "OFF", "OFF", "OFF", "E", "E", "E", "OFF", "N", "N", "N", "OFF", "OFF", "E", "E", "E", "OFF", "D", "D"]}]}};
+const WD=['월','화','수','목','금','토','일'];
+const wdIdx={'월':0,'화':1,'수':2,'목':3,'금':4,'토':5,'일':6};
+let curMonth='2026-07', curRole='admin';
+
+const CLASS=c=>{
+  if(c==='D')return['sh-D','D'];if(c==='E')return['sh-E','E'];if(c==='N')return['sh-N','N'];
+  if(c==='M')return['sh-M','M'];if(c==='OFF')return['sh-O','O'];if(c==='HY')return['sh-HY','연차'];
+  if(c==='S'||c==='S1')return['sh-S',c];if(c==='M/D'||c==='M/E')return['sh-C',c];
+  if(c==='.')return['','·'];return['sh-X',c];
+};
+const months=Object.keys(DATA);
+function monLabel(m){return m.replace('-',' · ')+'월';}
+
+function renderDuty(){
+  const M=DATA[curMonth], first=wdIdx[M.first], nd=31;
+  const ros=M.roster;
+  // stat cards
+  const staff=ros.filter(n=>!n.mgr);
+  const nights=staff.map(n=>n.s.filter(c=>c==='N'||c==='M/E').length);
+  const avgN=(nights.reduce((a,b)=>a+b,0)/staff.length).toFixed(1);
+  const cards=`<div class="cards">
+    <div class="card"><div class="k"><span class="dotc" style="background:var(--accent)"></span>편성 인원</div><div class="v">${staff.length}<span style="font-size:13px;font-weight:500;color:var(--muted)">명</span></div><div class="s">3개 팀 · 팀당 6~8명</div></div>
+    <div class="card"><div class="k"><span class="dotc" style="background:var(--sh-N-fg)"></span>1인 평균 나이트</div><div class="v">${avgN}<span style="font-size:13px;font-weight:500;color:var(--muted)">개</span></div><div class="s">최소 ${Math.min(...nights)} ~ 최대 ${Math.max(...nights)}</div></div>
+    <div class="card"><div class="k"><span class="dotc" style="background:var(--good)"></span>대원칙 위반</div><div class="v">0<span style="font-size:13px;font-weight:500;color:var(--muted)">건</span></div><div class="s">나이트후 휴식·역회전·하루1근무 ✓</div></div>
+    <div class="card"><div class="k"><span class="dotc" style="background:var(--warn)"></span>미반영 오프신청</div><div class="v">2<span style="font-size:13px;font-weight:500;color:var(--muted)">건</span></div><div class="s">전체 18건 중 16건 반영</div></div>
+  </div>`;
+
+  // header rows
+  let dnum='<tr><th class="nmcol">간호사</th>';
+  let dwd='<tr class="wd"><th class="nmcol"></th>';
+  for(let d=1;d<=nd;d++){const wi=(first+d-1)%7,we=wi>=5;
+    dnum+=`<th class="day${we?' we':''}">${d}</th>`;
+    dwd+=`<th class="day${we?' we':''}" style="color:${wi===6?'var(--danger)':wi===5?'var(--accent)':'var(--muted)'}">${WD[wi]}</th>`;}
+  ['D','E','N','M','O'].forEach(t=>{dnum+=`<th class="tot">${t}</th>`;dwd+=`<th class="tot"></th>`;});
+  dnum+='</tr>';dwd+='</tr>';
+
+  // body grouped by team
+  let body='';let lastTeam=null;
+  const teamName={1:'1팀 · 601~605',2:'2팀 · 606~610',3:'3팀 · 611~616'};
+  ros.forEach(n=>{
+    if(n.mgr){/*manager at top of team1*/}
+    if(n.t!==lastTeam){lastTeam=n.t;
+      body+=`<tr class="grp"><td colspan="${1+nd+5}">${teamName[n.t]||('팀 '+n.t)}</td></tr>`;}
+    let row=`<tr class="${n.mgr?'mgrrow':''}"><td class="nmcol">${n.name}${n.mgr?' <span style="font-size:10px;color:var(--muted)">파트장</span>':''}</td>`;
+    const cnt={D:0,E:0,N:0,M:0,O:0};
+    for(let d=0;d<nd;d++){const c=n.s[d],[cls,lab]=CLASS(c),wi=(first+d)%7,we=wi>=5;
+      row+=`<td class="day ${cls}${we?' we':''}"><span class="cell">${lab}</span></td>`;
+      if(c==='D')cnt.D++;else if(c==='E')cnt.E++;else if(c==='N')cnt.N++;else if(c==='M')cnt.M++;else if(c==='OFF')cnt.O++;}
+    row+=`<td class="tot tD">${cnt.D}</td><td class="tot">${cnt.E}</td><td class="tot tN">${cnt.N}</td><td class="tot">${cnt.M||''}</td><td class="tot">${cnt.O}</td></tr>`;
+    body+=row;
+  });
+
+  // footer daily totals
+  let fD='<tr><td class="nmcol">Day 합</td>',fE='<tr><td class="nmcol">Evening 합</td>',fN='<tr><td class="nmcol">Night 합</td>';
+  for(let d=0;d<nd;d++){const wi=(first+d)%7,we=wi>=5?' we':'';
+    let cD=0,cE=0,cN=0;staff.forEach(n=>{const c=n.s[d];if(c==='D'||c==='M/D')cD++;else if(c==='E'||c==='M/E')cE++;else if(c==='N')cN++;});
+    fD+=`<td class="day${we}">${cD}</td>`;fE+=`<td class="day${we}">${cE}</td>`;fN+=`<td class="day${we}">${cN}</td>`;}
+  fD+='<td class="tot" colspan="5"></td></tr>';fE+='<td class="tot" colspan="5"></td></tr>';fN+='<td class="tot" colspan="5"></td></tr>';
+
+  const legend=`<div class="legend">
+    ${[['D','D'],['E','E'],['N','N'],['M','M'],['O','OFF'],['HY','연차']].map(([k,l])=>{const[cl]=CLASS(k==='O'?'OFF':k==='HY'?'HY':k);return `<span class="lg"><span class="chip ${cl}">${l==='OFF'?'O':l==='연차'?'연':l}</span>${({D:'데이',E:'이브닝',N:'나이트',M:'미드',OFF:'오프',HY:'연차'})[k]||l}</span>`}).join('')}
+  </div>`;
+
+  const gen = curRole==='staff' ? '' :
+    `<button class="btn" onclick="genToast()">✨ 근무표 생성</button>
+     <button class="btn ghost">✏️ 수정</button>
+     <button class="btn ghost">⬇ 내보내기</button>`;
+
+  return `<div class="crumb">61병동 · ${monLabel(curMonth)} 근무예정표</div>
+    <div class="h1">근무표 (듀티표)</div>
+    ${curRole==='staff'?'<div class="mocknote">👀 일반(부서원) 권한: 근무표 조회 전용 · 원티드 오프 신청 가능</div>':''}
+    ${cards}
+    <div class="toolbar">
+      <div class="mnav"><button onclick="moveMonth(-1)">‹</button><span class="cur">${monLabel(curMonth)}</span><button onclick="moveMonth(1)">›</button></div>
+      ${gen}
+      <div class="sp"></div>${legend}
+    </div>
+    <div class="gridwrap"><div class="gscroll"><table class="duty">
+      <thead>${dnum}${dwd}</thead><tbody>${body}</tbody>
+      <tfoot>${fD}${fE}${fN}</tfoot>
+    </table></div></div>
+    <div class="note">🟢 자동 생성 결과 · 대원칙(나이트 후 휴식·역회전 금지·하루 1근무) 위반 0건 · 이름/팀 열 고정, 날짜는 가로 스크롤</div>`;
+}
+
+function renderReq(){
+  const mine=curRole==='staff';
+  return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">원티드 오프 신청</div>
+  <div class="mocknote">${mine?'부서원이 원하는 오프·나이트를 신청하면 파트장 승인 후 근무표에 반영됩니다.':'부서원 신청을 검토·승인하세요. (월 최대 3건, 겹치면 공정 순번)'}</div>
+  <div class="grid2">
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:12px;">${mine?'새 신청':'대기 중 신청'} </div>
+      ${mine?`
+        <div class="field"><label>희망 날짜</label><input type="date" value="2026-08-15"></div>
+        <div class="field"><label>종류</label><select><option>오프(OFF)</option><option>나이트(N)</option></select></div>
+        <div class="field"><label>사유 (선택)</label><input placeholder="예: 가족 행사"></div>
+        <button class="btn" onclick="toast('신청이 접수되었습니다 · 파트장 승인 대기')">신청하기</button>
+        <div class="note">이번 달 신청 2 / 3건 사용</div>`
+      :`
+        ${reqItem('신유진','8/15 오프','가족 행사','wait')}
+        ${reqItem('이지은','8/9 나이트','—','wait')}
+        ${reqItem('강고은','8/22 오프','병원 예약','ok')}
+        ${reqItem('문수연','8/3 오프','—','ok')}`}
+    </div>
+    <div class="panel">
+      <div style="font-weight:700;margin-bottom:12px;">내 신청 현황</div>
+      ${reqItem('나','8/15 오프','가족 행사','wait',true)}
+      ${reqItem('나','8/2 오프','—','ok',true)}
+      <div class="note" style="margin-top:14px">반영률: 이번 달 16/18건 (89%)</div>
+    </div>
+  </div>`;
+}
+function reqItem(who,what,why,st,noact){
+  return `<div class="req"><div><div class="who">${who} · ${what}</div><div class="meta">${why}</div></div>
+    <span class="badge ${st}">${st==='wait'?'승인 대기':'반영됨'}</span>
+    ${(!noact&&curRole!=='staff')?`<div class="mini-actions"><button class="btn" style="padding:5px 10px" onclick="toast('승인되었습니다')">승인</button><button class="btn ghost" style="padding:5px 10px">반려</button></div>`:''}</div>`;
+}
+
+function renderStat(){
+  const M=DATA[curMonth];const staff=M.roster.filter(n=>!n.mgr);
+  const arr=staff.map(n=>({name:n.name,N:n.s.filter(c=>c==='N').length})).sort((a,b)=>b.N-a.N);
+  const mx=Math.max(...arr.map(a=>a.N));
+  return `<div class="crumb">61병동 · ${monLabel(curMonth)}</div><div class="h1">통계 · 공정성</div>
+  <div class="cards">
+    <div class="card"><div class="k">나이트 편차</div><div class="v">2<span style="font-size:13px;color:var(--muted)">개</span></div><div class="s">최대-최소 (목표 ≤3)</div></div>
+    <div class="card"><div class="k">주말 오프 평균</div><div class="v">4.1<span style="font-size:13px;color:var(--muted)">개</span></div><div class="s">1인당</div></div>
+    <div class="card"><div class="k">EOD(지양패턴)</div><div class="v">14<span style="font-size:13px;color:var(--muted)">건</span></div><div class="s">목표 1인 월 ≤1건</div></div>
+  </div>
+  <div class="panel"><div style="font-weight:700;margin-bottom:14px;">간호사별 나이트 배분</div>
+    ${arr.map(a=>`<div class="statrow"><span>${a.name}</span><span class="bar"><span style="width:${a.N/mx*100}%"></span></span><span class="n">${a.N}</span></div>`).join('')}
+  </div>`;
+}
+function renderFeedback(){
+  return `<div class="crumb">마스터 · 전체 병동</div><div class="h1">피드백 수신함</div>
+  <div class="mocknote">부서원·파트장이 남긴 요청/문의가 여기에 모입니다. (신규 3건) · 이메일로도 전송</div>
+  <div class="panel">
+    ${fb('61병동 파트장 김OO','오프 신청 마감일을 25일로 바꿀 수 있을까요?','2시간 전','new')}
+    ${fb('61병동 신유진','통계 화면에 내 근무시간 합계도 보여주면 좋겠어요','어제','new')}
+    ${fb('62병동 파트장','미드 인원을 요일별로 다르게 설정하고 싶습니다','어제','new')}
+    ${fb('61병동 이정욱','모바일에서 글씨가 작아요','3일 전','read')}
+  </div>`;
+}
+function fb(who,msg,time,st){
+  return `<div class="req"><div style="flex:1"><div class="who">${who} ${st==='new'?'<span class="badge wait" style="margin-left:6px">신규</span>':''}</div><div style="font-size:13px;margin:3px 0">${msg}</div><div class="meta">${time}</div></div>
+  <div class="mini-actions"><button class="btn ghost" style="padding:5px 10px" onclick="toast('처리 완료로 표시했습니다')">처리</button></div></div>`;
+}
+function renderFbNew(){
+  return `<div class="crumb">${curRole==='staff'?'부서원':'파트장'} · 61병동</div><div class="h1">요청 / 문의 남기기</div>
+  <div class="mocknote">개발 중이라 수정이 잦습니다. 불편한 점·바라는 점을 남기면 마스터에게 바로 전달돼요.</div>
+  <div class="panel" style="max-width:560px">
+    <div class="field"><label>제목</label><input placeholder="예: 통계 화면 개선 요청"></div>
+    <div class="field"><label>내용</label><textarea rows="5" placeholder="자유롭게 적어주세요"></textarea></div>
+    <button class="btn" onclick="toast('전달되었습니다 · 감사합니다!')">보내기</button>
+  </div>`;
+}
+function renderSimple(t){
+  const map={roster:'간호사 명단',settings:'병동 설정',wards:'병동 관리'};
+  return `<div class="h1">${map[t]}</div><div class="mocknote">시안 화면 — 상세 UI는 개발 단계에서 구성합니다.</div>
+  <div class="panel" style="color:var(--muted);font-size:13px">여기에 ${map[t]} 기능이 들어갑니다.</div>`;
+}
+
+function render(){
+  const t=document.querySelector('.nav.active')?.dataset.tab||'duty';
+  let html;
+  if(t==='duty')html=renderDuty();
+  else if(t==='req')html=renderReq();
+  else if(t==='stat')html=renderStat();
+  else if(t==='feedback')html=renderFeedback();
+  else if(t==='fbnew')html=renderFbNew();
+  else html=renderSimple(t);
+  document.getElementById('main').innerHTML=html;
+}
+function applyRole(){
+  document.querySelectorAll('[data-role]').forEach(el=>{
+    el.classList.toggle('hide', !el.dataset.role.split(' ').includes(curRole));
+  });
+  document.getElementById('avatar').textContent=curRole==='master'?'M':curRole==='admin'?'파':'원';
+  // if active tab hidden, go to duty
+  const act=document.querySelector('.nav.active');
+  if(act&&act.classList.contains('hide')){setActive('duty');}
+  render();
+}
+function setActive(tab){
+  document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.tab===tab));
+  render();
+}
+document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{if(n.dataset.tab)setActive(n.dataset.tab);});
+document.getElementById('roleSel').onchange=e=>{curRole=e.target.value;applyRole();};
+document.getElementById('wardSel').onchange=()=>toast('병동을 전환했습니다 (시안)');
+document.getElementById('themeBtn').onclick=()=>{
+  const r=document.documentElement,cur=r.getAttribute('data-theme');
+  r.setAttribute('data-theme',cur==='dark'?'light':'dark');
+};
+function moveMonth(d){const i=months.indexOf(curMonth);const ni=Math.min(months.length-1,Math.max(0,i+d));curMonth=months[ni];render();}
+let tt;
+function toast(m){const el=document.getElementById('toast');el.textContent=m;el.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2200);}
+function genToast(){toast('⏳ 근무표를 생성하는 중...');setTimeout(()=>toast('✅ 근무표 생성 완료 · 대원칙 위반 0건'),900);}
+applyRole();
+</script>
