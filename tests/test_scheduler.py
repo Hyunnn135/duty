@@ -55,6 +55,28 @@ def test_no_day_or_evening_after_night():
                 assert sch.shifts[d + 1] not in (Shift.DAY, Shift.EVENING)
 
 
+def test_no_day_after_evening():
+    """대원칙 P3: E 다음날 D 직접 배정 금지 (역회전)."""
+    req = ScheduleRequest(num_days=14, nurses=_nurses(8))
+    res = solve(req)
+    assert res.feasible
+    for sch in res.schedules:
+        for d in range(len(sch.shifts) - 1):
+            if sch.shifts[d] == Shift.EVENING:
+                assert sch.shifts[d + 1] != Shift.DAY
+
+
+def test_no_nod_pattern():
+    """대원칙 P1: N-OFF-D 금지 (나이트 후 오프 1개만 두고 데이 복귀 금지)."""
+    req = ScheduleRequest(num_days=14, nurses=_nurses(8))
+    res = solve(req)
+    assert res.feasible
+    for sch in res.schedules:
+        for d in range(len(sch.shifts) - 2):
+            trio = (sch.shifts[d], sch.shifts[d + 1], sch.shifts[d + 2])
+            assert trio != (Shift.NIGHT, Shift.OFF, Shift.DAY)
+
+
 def test_max_consecutive_days():
     req = ScheduleRequest(
         num_days=14, nurses=_nurses(8), max_consecutive_days=3

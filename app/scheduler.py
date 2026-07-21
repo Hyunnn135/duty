@@ -3,13 +3,15 @@
 제약조건
 --------
 하드 (반드시 지킴):
-  1. 각 간호사는 하루에 D/E/N/O 중 정확히 하나에 배정된다.
+  1. 각 간호사는 하루에 D/E/N/O 중 정확히 하나에 배정된다. (대원칙 P2)
   2. 각 교대(D/E/N)는 하루에 최소 필요 인원 이상 배치된다.
-  3. 나이트(N) 다음 날은 D 또는 E로 배정하지 않는다 (나이트 후 휴식).
-  4. 연속 근무일이 max_consecutive_days 를 넘지 않는다.
-  5. 연속 나이트가 max_consecutive_nights 를 넘지 않는다.
-  6. 간호사별 오프가 min_off_days 이상이다.
-  7. forbid 타입 개인 요청(예: 승인된 연차)은 반드시 지킨다.
+  3. 나이트(N) 다음 날은 D 또는 E로 배정하지 않는다 (나이트 후 휴식, 대원칙 P1).
+  4. N-OFF-D 패턴을 금지한다 (나이트 후 오프 하나만 두고 데이 복귀 금지, 대원칙 P1).
+  5. 이브닝(E) 다음 날은 D로 배정하지 않는다 (역회전 금지, 대원칙 P3).
+  6. 연속 근무일이 max_consecutive_days 를 넘지 않는다.
+  7. 연속 나이트가 max_consecutive_nights 를 넘지 않는다.
+  8. 간호사별 오프가 min_off_days 이상이다.
+  9. forbid 타입 개인 요청(예: 승인된 연차)은 반드시 지킨다.
 
 소프트 (되도록 반영, 목적 함수로 최소화):
   - prefer 타입 개인 희망 미반영 (weight_preference)
@@ -89,12 +91,25 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 sum(x[i, d, s] for i in range(N)) >= req.min_staff.get(s)
             )
 
-    # (3) 나이트 다음 날은 D/E 금지
+    # (3) 대원칙 P1: 나이트 다음 날은 D/E 금지
+    #     대원칙 P3: 이브닝 다음 날 D 금지 (역회전)
     for i in range(N):
         for d in range(req.num_days - 1):
             model.add(x[i, d + 1, Shift.DAY] == 0).only_enforce_if(x[i, d, Shift.NIGHT])
             model.add(x[i, d + 1, Shift.EVENING] == 0).only_enforce_if(
                 x[i, d, Shift.NIGHT]
+            )
+            model.add(x[i, d + 1, Shift.DAY] == 0).only_enforce_if(
+                x[i, d, Shift.EVENING]
+            )
+
+    # (4) 대원칙 P1: N-OFF-D 금지 (나이트 후 오프 1개만 쉬고 데이 복귀 금지)
+    for i in range(N):
+        for d in range(req.num_days - 2):
+            model.add_bool_or(
+                x[i, d, Shift.NIGHT].negated(),
+                x[i, d + 1, Shift.OFF].negated(),
+                x[i, d + 2, Shift.DAY].negated(),
             )
 
     # 근무 여부 보조 변수: work[i,d] = 1 이면 그날 근무(오프 아님)
