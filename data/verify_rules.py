@@ -49,11 +49,6 @@ def is_work(cell: str) -> bool:
     return eff_shift(cell) is not None
 
 
-def is_off(cell: str) -> bool:
-    """순수 오프. 연차(HY)·경조 등은 '휴무'지만 OFF와는 구분."""
-    return cell == "OFF"
-
-
 def analyze_month(label: str, roster: list[dict], ndays: int = 31) -> None:
     nurses = [n for n in roster if not n["manager"]]
     week_under2 = 0   # 달력주 오프+연차 < 2 (소프트 지표)
