@@ -152,3 +152,89 @@ def test_infeasible_when_not_enough_nurses():
     res = solve(req)
     assert not res.feasible
     assert res.status == "INFEASIBLE"
+
+
+# ---- Phase 1: 미드 · 사전배정 · 원티드 · 이월 · 나이트 제외 ----
+
+def test_mid_shift_assignable_and_no_mid_after_night():
+    ms = MinStaff(D=1, E=1, N=1, M=1)
+    req = ScheduleRequest(num_days=7, nurses=_nurses(7), min_staff=ms)
+    res = solve(req)
+    assert res.feasible
+    for d in range(7):  # 매일 미드 최소 1명
+        assert sum(1 for s in res.schedules if s.shifts[d] == Shift.MID) >= 1
+    for sch in res.schedules:  # N 다음날 M 금지 (하드 전이)
+        for d in range(6):
+            if sch.shifts[d] == Shift.NIGHT:
+                assert sch.shifts[d + 1] != Shift.MID
+
+
+def test_pre_assigned_leave_is_fixed_and_labeled():
+    from app.models import PreAssigned
+
+    req = ScheduleRequest(
+        num_days=7, nurses=_nurses(7),
+        pre_assigned=[PreAssigned(nurse_id="n0", day=2, code="HY")],
+    )
+    res = solve(req)
+    assert res.feasible
+    n0 = next(s for s in res.schedules if s.nurse_id == "n0")
+    assert n0.shifts[2] == Shift.OFF          # 내부적으로 휴무
+    assert n0.labels[2] == "HY"               # 표시는 연차 코드
+    assert n0.counts.get("HY", 0) == 1        # 집계는 HY로 (O와 구분)
+
+
+def test_wanted_off_range_honored():
+    from app.models import WantedRequest
+
+    req = ScheduleRequest(
+        num_days=10, nurses=_nurses(8),
+        wanted=[WantedRequest(nurse_id="n0", start_day=3, end_day=5, shift=Shift.OFF)],
+    )
+    res = solve(req)
+    assert res.feasible
+    n0 = next(s for s in res.schedules if s.nurse_id == "n0")
+    assert all(n0.shifts[d] == Shift.OFF for d in (3, 4, 5))
+    assert res.unmet_wanted_off == 0
+
+
+def test_night_ineligible_never_night():
+    nurses = _nurses(8)
+    nurses[0] = Nurse(id="n0", name="신규", night_eligible=False)
+    req = ScheduleRequest(num_days=10, nurses=nurses)
+    res = solve(req)
+    assert res.feasible
+    n0 = next(s for s in res.schedules if s.nurse_id == "n0")
+    assert Shift.NIGHT not in n0.shifts
+
+
+def test_carry_over_limits_month_start():
+    # n0: 전월 말 나이트 3연속 → 1일차 나이트 불가(연속 4 방지) + D/E/M 불가(P1)
+    # n1: 전월 말 E → 1일차 D 불가(P3)
+    # n2: 전월 말 [N, O] → 1일차 D 불가(N-OFF-D 경계)
+    req = ScheduleRequest(
+        num_days=7, nurses=_nurses(8),
+        carry_over={
+            "n0": ["N", "N", "N"],
+            "n1": ["D", "E"],
+            "n2": ["N", "O"],
+        },
+    )
+    res = solve(req)
+    assert res.feasible
+    by = {s.nurse_id: s for s in res.schedules}
+    assert by["n0"].shifts[0] in (Shift.OFF,)          # N 뒤라 D/E/M 금지 + 연속N 초과라 N도 금지
+    assert by["n1"].shifts[0] != Shift.DAY
+    assert by["n2"].shifts[0] != Shift.DAY
+
+
+def test_carry_over_work_streak():
+    # 전월 말 5일 연속 근무 → 1일차는 반드시 휴무 (연속 6일 방지)
+    req = ScheduleRequest(
+        num_days=7, nurses=_nurses(8), max_consecutive_days=5,
+        carry_over={"n0": ["D", "D", "E", "E", "E"]},
+    )
+    res = solve(req)
+    assert res.feasible
+    n0 = next(s for s in res.schedules if s.nurse_id == "n0")
+    assert n0.shifts[0] == Shift.OFF
