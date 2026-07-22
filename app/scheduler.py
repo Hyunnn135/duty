@@ -26,7 +26,11 @@ from __future__ import annotations
 
 from ortools.sat.python import cp_model
 
-from .config import HARD_FORBIDDEN_GAP_PATTERNS, HARD_FORBIDDEN_TRANSITIONS
+from .config import (
+    HARD_FORBIDDEN_GAP_PATTERNS,
+    HARD_FORBIDDEN_TRANSITIONS,
+    SOFT_DISCOURAGED_TRANSITIONS,
+)
 from .models import (
     WORK_SHIFTS,
     NurseSchedule,
@@ -191,6 +195,43 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         for i in range(N):
             model.add(sum(x[i, d, Shift.OFF] for d in days) >= req.min_off_days)
 
+    # (11) 팀별 최소 인원: 각 교대(D/E/N)에 팀당 team_min_staff명 이상
+    if req.team_min_staff > 0:
+        teams: dict[int, list[int]] = {}
+        for i, nurse in enumerate(nurses):
+            teams.setdefault(nurse.team, []).append(i)
+        for d in days:
+            for s in (Shift.DAY, Shift.EVENING, Shift.NIGHT):
+                for members in teams.values():
+                    model.add(
+                        sum(x[i, d, s] for i in members) >= req.team_min_staff
+                    )
+
+    # (12) T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측: 단일 N 0건)
+    if req.enforce_night_block and nd >= 2:
+        for i, nurse in enumerate(nurses):
+            carry = req.carry_over.get(nurse.id, [])
+            carry_n = bool(carry) and carry[-1] == Shift.NIGHT.value
+            # 1일차: 앞이 나이트 이월이 아니면, N이면 다음날도 N
+            if not carry_n:
+                model.add(x[i, 1, Shift.NIGHT] == 1).only_enforce_if(
+                    x[i, 0, Shift.NIGHT]
+                )
+            # 중간: N[d]이면 N[d-1] 또는 N[d+1] (말일은 다음 달로 이어질 수 있어 제외)
+            for d in range(1, nd - 1):
+                model.add_bool_or(
+                    x[i, d, Shift.NIGHT].negated(),
+                    x[i, d - 1, Shift.NIGHT],
+                    x[i, d + 1, Shift.NIGHT],
+                )
+
+    # (13) 월 나이트 상한
+    if req.max_nights_per_month is not None:
+        for i in range(N):
+            model.add(
+                sum(x[i, d, Shift.NIGHT] for d in days) <= req.max_nights_per_month
+            )
+
     # (8a) 사전 배정 (연차 등): 해당 날 OFF로 하드 고정, 표시 라벨은 코드
     label_override: dict[tuple[int, int], str] = {}
     for p in req.pre_assigned:
@@ -255,6 +296,107 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         model.add(wspread == w_max - w_min)
         fairness_terms.append(wspread)
 
+    # (소프트) 적정 인원 부족 감점 (INRC S1 방식)
+    target_terms: list = []
+    if req.weight_target_staff > 0 and req.staffing:
+        for d in days:
+            st = req.staffing_for(d)
+            if st is None:
+                continue
+            for s in WORK_SHIFTS:
+                tgt = st.of(s).target
+                if tgt is None or tgt <= st.of(s).min:
+                    continue
+                short = model.new_int_var(0, tgt, f"short_{d}_{s.value}")
+                model.add(short >= tgt - sum(x[i, d, s] for i in range(N)))
+                target_terms.append(short)
+
+    # (소프트) T6b: OFF-근무-OFF 고립 근무일 감점 (실측 월 3~4건 수준으로 희소해야 함)
+    isolated_terms: list = []
+    if req.weight_isolated_work > 0:
+        for i in range(N):
+            for d in range(1, nd - 1):
+                b = model.new_bool_var(f"iso_{i}_{d}")
+                model.add(
+                    b >= x[i, d - 1, Shift.OFF] + work[i, d] + x[i, d + 1, Shift.OFF] - 2
+                )
+                isolated_terms.append(b)
+
+    # (소프트) T11b: E-OFF-D 감점 (지양하되 허용, 실측 1인 월 ≤1건 수준)
+    eod_terms: list = []
+    if req.weight_eod > 0:
+        for i in range(N):
+            for d in range(nd - 2):
+                b = model.new_bool_var(f"eod_{i}_{d}")
+                model.add(
+                    b
+                    >= x[i, d, Shift.EVENING]
+                    + x[i, d + 1, Shift.OFF]
+                    + x[i, d + 2, Shift.DAY]
+                    - 2
+                )
+                eod_terms.append(b)
+
+    # (소프트) 지양 전이 감점: M→D, E→M (실측 각 1건 — 드물게만 허용)
+    softtrans_terms: list = []
+    if req.weight_soft_transition > 0:
+        for i in range(N):
+            for d in range(nd - 1):
+                for a, c in SOFT_DISCOURAGED_TRANSITIONS:
+                    b = model.new_bool_var(f"st_{i}_{d}_{a.value}{c.value}")
+                    model.add(b >= x[i, d, a] + x[i, d + 1, c] - 1)
+                    softtrans_terms.append(b)
+
+    # (소프트) 달력주(월~일) 오프 ≥ 2 선호 (T2 재정의 — year/month 지정 시에만)
+    weekoff_terms: list = []
+    fw = req.first_weekday()
+    if req.weight_week_off > 0 and fw is not None:
+        weeks: list[list[int]] = []
+        cur: list[int] = []
+        for d in days:
+            if (fw + d) % 7 == 0 and cur:  # 월요일에 새 주
+                weeks.append(cur)
+                cur = []
+            cur.append(d)
+        if cur:
+            weeks.append(cur)
+        for wk in weeks:
+            if len(wk) != 7:  # 부분 주는 제외
+                continue
+            for i in range(N):
+                short = model.new_int_var(0, 2, f"wkoff_{i}_{wk[0]}")
+                model.add(short >= 2 - sum(x[i, d, Shift.OFF] for d in wk))
+                weekoff_terms.append(short)
+
+    # (소프트) 미드=저연차: 팀 내 상위권(1~3위)에 미드 배정 시 감점 (실측 상위권 0회)
+    midsenior_terms: list = []
+    if req.weight_mid_senior > 0:
+        for i, nurse in enumerate(nurses):
+            if nurse.seniority_rank is not None and nurse.seniority_rank <= 3:
+                for d in days:
+                    midsenior_terms.append(x[i, d, Shift.MID])
+
+    # (소프트) 프리셉터 동행: 프리셉티가 근무하는 날 프리셉터가 같은 교대가 아니면 감점
+    preceptor_terms: list = []
+    if req.weight_preceptor > 0:
+        for j, nurse in enumerate(nurses):
+            if not nurse.preceptor_id or nurse.preceptor_id not in idx:
+                continue
+            p = idx[nurse.preceptor_id]
+            for d in days:
+                same = model.new_bool_var(f"pair_{j}_{d}")
+                both = []
+                for s in WORK_SHIFTS:
+                    b = model.new_bool_var(f"pair_{j}_{d}_{s.value}")
+                    model.add_bool_and(x[j, d, s], x[p, d, s]).only_enforce_if(b)
+                    model.add(b <= x[j, d, s])
+                    model.add(b <= x[p, d, s])
+                    both.append(b)
+                model.add_max_equality(same, both)
+                miss = model.new_bool_var(f"pairmiss_{j}_{d}")
+                model.add(miss >= work[j, d] - same)
+                preceptor_terms.append(miss)
+
     # ---- 목적 함수 ----
     objective = []
     if wanted_off_terms:
@@ -265,6 +407,20 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_preference * sum(pref_terms))
     if fairness_terms:
         objective.append(req.weight_fairness * sum(fairness_terms))
+    if target_terms:
+        objective.append(req.weight_target_staff * sum(target_terms))
+    if isolated_terms:
+        objective.append(req.weight_isolated_work * sum(isolated_terms))
+    if eod_terms:
+        objective.append(req.weight_eod * sum(eod_terms))
+    if softtrans_terms:
+        objective.append(req.weight_soft_transition * sum(softtrans_terms))
+    if weekoff_terms:
+        objective.append(req.weight_week_off * sum(weekoff_terms))
+    if midsenior_terms:
+        objective.append(req.weight_mid_senior * sum(midsenior_terms))
+    if preceptor_terms:
+        objective.append(req.weight_preceptor * sum(preceptor_terms))
     if objective:
         model.minimize(sum(objective))
 

@@ -184,6 +184,15 @@ class ScheduleRequest(BaseModel):
     max_consecutive_days: int = Field(5, ge=1, description="연속 근무 최대 일수")
     max_consecutive_nights: int = Field(3, ge=1, description="연속 나이트 최대 일수")
     min_off_days: int = Field(0, ge=0, description="기간 내 간호사별 최소 오프 일수")
+    max_nights_per_month: int | None = Field(
+        None, ge=1, description="간호사별 월 나이트 상한 (None=미적용, 61병동 기본 7)"
+    )
+    team_min_staff: int = Field(
+        0, ge=0, description="팀당 각 교대(D/E/N) 최소 인원 (0=미적용, 61병동 기본 1)"
+    )
+    enforce_night_block: bool = Field(
+        True, description="T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측 하드)"
+    )
 
     requests: list[ShiftRequest] = Field(default_factory=list)
     wanted: list[WantedRequest] = Field(default_factory=list)
@@ -198,6 +207,13 @@ class ScheduleRequest(BaseModel):
     weight_fairness: int = Field(3, ge=0, description="근무 배분 불공정 페널티")
     weight_wanted_off: int = Field(50, ge=0, description="원티드 오프 미반영 페널티(최우선)")
     weight_wanted_work: int = Field(5, ge=0, description="원티드 D/E/N 미반영 페널티(낮음)")
+    weight_target_staff: int = Field(4, ge=0, description="적정 인원 부족 페널티 (INRC S1)")
+    weight_isolated_work: int = Field(6, ge=0, description="T6b: OFF-근무-OFF 고립근무 페널티")
+    weight_eod: int = Field(4, ge=0, description="T11b: E-OFF-D 패턴 페널티 (지양)")
+    weight_soft_transition: int = Field(3, ge=0, description="M→D·E→M 지양 전이 페널티")
+    weight_week_off: int = Field(5, ge=0, description="달력주(월~일) 오프<2 부족 페널티")
+    weight_mid_senior: int = Field(8, ge=0, description="미드를 상위권(경력 1~3위)에 배정 시 페널티")
+    weight_preceptor: int = Field(6, ge=0, description="프리셉티 근무일에 프리셉터 비동행 페널티")
 
     time_limit_seconds: float = Field(15.0, gt=0, le=120)
 

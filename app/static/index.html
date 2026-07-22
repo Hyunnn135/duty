@@ -55,10 +55,40 @@
 </style>
 </head>
 <body>
-<header>
-  <h1>🏥 간호사 근무표 자동 생성</h1>
-  <p>OR-Tools CP-SAT · 3교대(D/E/N) 제약조건 최적화</p>
+<header style="display:flex;align-items:center;gap:16px;">
+  <div style="flex:1">
+    <h1>🏥 간호사 근무표 자동 생성</h1>
+    <p>OR-Tools CP-SAT · 3교대+미드 제약조건 최적화</p>
+  </div>
+  <div id="userBox" style="display:none;text-align:right;font-size:13px;">
+    <div id="userName" style="font-weight:700"></div>
+    <div id="userRole" style="color:#94a3b8;font-size:11px;margin:2px 0 6px"></div>
+    <button onclick="logout()" style="background:#334155;padding:5px 12px;font-size:12px;">로그아웃</button>
+  </div>
 </header>
+
+<!-- 로그인/회원가입 오버레이 -->
+<div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;
+     display:flex;align-items:center;justify-content:center;padding:20px;">
+  <div class="card" style="width:100%;max-width:380px;background:#fff;">
+    <h2 id="authTitle" style="margin-top:0">로그인</h2>
+    <div class="grid">
+      <div><label>이메일</label><input type="email" id="authEmail" placeholder="you@hospital.kr"></div>
+      <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상"></div>
+      <div id="regFields" style="display:none">
+        <label>이름</label><input id="authName" placeholder="예: 김간호">
+        <label style="margin-top:10px">병동</label><input id="authWard" placeholder="예: 61">
+      </div>
+      <div id="authErr" style="display:none;color:#991b1b;font-size:13px;"></div>
+      <button id="authBtn" onclick="submitAuth()">로그인</button>
+      <div style="font-size:12.5px;color:#64748b;text-align:center;">
+        <a href="#" id="authToggle" onclick="toggleAuthMode();return false;">처음이신가요? 회원가입</a>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;">💡 최초 가입자는 자동으로 마스터 권한을 받습니다.
+        근무표 생성은 관리자(파트장)·마스터만 가능합니다.</div>
+    </div>
+  </div>
+</div>
 
 <div class="wrap">
   <div class="card">
@@ -123,6 +153,63 @@
 </div>
 
 <script>
+/* ---- 인증 ---- */
+let regMode = false;
+function token() { return localStorage.getItem("duty_token") || ""; }
+function authHeaders() { return token() ? { "Authorization": "Bearer " + token() } : {}; }
+function showAuth(show) { document.getElementById("authOverlay").style.display = show ? "flex" : "none"; }
+function toggleAuthMode() {
+  regMode = !regMode;
+  document.getElementById("authTitle").textContent = regMode ? "회원가입" : "로그인";
+  document.getElementById("authBtn").textContent = regMode ? "가입하기" : "로그인";
+  document.getElementById("regFields").style.display = regMode ? "block" : "none";
+  document.getElementById("authToggle").textContent =
+    regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
+}
+function authError(msg) {
+  const el = document.getElementById("authErr");
+  el.textContent = msg; el.style.display = "block";
+}
+async function submitAuth() {
+  const email = document.getElementById("authEmail").value.trim();
+  const pw = document.getElementById("authPw").value;
+  const url = regMode ? "/api/auth/register" : "/api/auth/login";
+  const body = regMode
+    ? { email, password: pw, name: document.getElementById("authName").value.trim() || "사용자",
+        ward: document.getElementById("authWard").value.trim() }
+    : { email, password: pw };
+  try {
+    const res = await fetch(url, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) { authError(data.detail || "실패했습니다"); return; }
+    localStorage.setItem("duty_token", data.token);
+    applyUser(data.name, data.role);
+    showAuth(false);
+  } catch (e) { authError("서버에 연결할 수 없습니다"); }
+}
+const ROLE_KO = { master: "마스터", admin: "관리자(파트장)", staff: "일반(부서원)" };
+function applyUser(name, role) {
+  document.getElementById("userBox").style.display = "block";
+  document.getElementById("userName").textContent = name;
+  document.getElementById("userRole").textContent = ROLE_KO[role] || role;
+  const canGen = role === "admin" || role === "master";
+  document.getElementById("genBtn").disabled = !canGen;
+  document.getElementById("genBtn").title = canGen ? "" : "근무표 생성은 관리자·마스터 전용입니다";
+}
+function logout() {
+  localStorage.removeItem("duty_token");
+  location.reload();
+}
+async function initAuth() {
+  if (!token()) { showAuth(true); return; }
+  const res = await fetch("/api/auth/me", { headers: authHeaders() });
+  if (!res.ok) { localStorage.removeItem("duty_token"); showAuth(true); return; }
+  const me = await res.json();
+  applyUser(me.name, me.role);
+}
+initAuth();
+
 const SHIFTS = ["D", "E", "N", "O"];
 
 function parseNurses() {
@@ -179,9 +266,11 @@ async function generate() {
   try {
     const res = await fetch("/api/schedule", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(payload),
     });
+    if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
+    if (res.status === 403) { throw new Error("근무표 생성 권한이 없습니다 (관리자·마스터 전용)"); }
     const data = await res.json();
     render(data, payload.num_days);
   } catch (e) {
