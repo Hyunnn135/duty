@@ -228,6 +228,81 @@ def test_carry_over_limits_month_start():
     assert by["n2"].shifts[0] != Shift.DAY
 
 
+# ---- Phase 2: 팀별 인원 · 나이트 블록 · 월 상한 · 프리셉터 · 미드=저연차 ----
+
+def test_team_min_staff_per_shift():
+    nurses = [
+        Nurse(id=f"n{i}", name=f"간호사{i}", team=(i % 3) + 1) for i in range(12)
+    ]
+    req = ScheduleRequest(num_days=7, nurses=nurses, team_min_staff=1)
+    res = solve(req)
+    assert res.feasible
+    by_team = {1: [], 2: [], 3: []}
+    for i, sch in enumerate(res.schedules):
+        by_team[nurses[i].team].append(sch)
+    for d in range(7):
+        for t, members in by_team.items():
+            for s in (Shift.DAY, Shift.EVENING, Shift.NIGHT):
+                assert sum(1 for m in members if m.shifts[d] == s) >= 1, (
+                    f"{d+1}일 {s.value}에 {t}팀 없음"
+                )
+
+
+def test_no_isolated_single_night():
+    """T6a: 나이트 블록 ≥ 2 (말일 시작 블록 제외)."""
+    req = ScheduleRequest(num_days=14, nurses=_nurses(8))
+    res = solve(req)
+    assert res.feasible
+    for sch in res.schedules:
+        for d in range(14):
+            if sch.shifts[d] != Shift.NIGHT:
+                continue
+            prev_n = d > 0 and sch.shifts[d - 1] == Shift.NIGHT
+            next_n = d < 13 and sch.shifts[d + 1] == Shift.NIGHT
+            if d == 13:  # 말일은 다음 달로 이어질 수 있음
+                continue
+            assert prev_n or next_n, f"{sch.name} {d+1}일 단일 나이트"
+
+
+def test_max_nights_per_month():
+    req = ScheduleRequest(num_days=14, nurses=_nurses(8), max_nights_per_month=3)
+    res = solve(req)
+    assert res.feasible
+    for sch in res.schedules:
+        assert sch.counts["N"] <= 3
+
+
+def test_preceptor_pairing_preferred():
+    nurses = _nurses(8)
+    nurses[7] = Nurse(id="n7", name="신규", is_new=True, night_eligible=False,
+                      preceptor_id="n0")
+    req = ScheduleRequest(num_days=7, nurses=nurses)
+    res = solve(req)
+    assert res.feasible
+    by = {s.nurse_id: s for s in res.schedules}
+    together = sum(
+        1 for d in range(7)
+        if by["n7"].shifts[d] != Shift.OFF
+        and by["n7"].shifts[d] == by["n0"].shifts[d]
+    )
+    workdays = sum(1 for d in range(7) if by["n7"].shifts[d] != Shift.OFF)
+    assert workdays == 0 or together / workdays >= 0.5  # 과반 동행
+
+
+def test_mid_avoids_senior_ranks():
+    ms = MinStaff(D=1, E=1, N=1, M=1)
+    nurses = [
+        Nurse(id=f"n{i}", name=f"간호사{i}", seniority_rank=i + 1) for i in range(8)
+    ]
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms)
+    res = solve(req)
+    assert res.feasible
+    senior_mids = sum(
+        res.schedules[i].counts["M"] for i in range(3)  # 랭크 1~3
+    )
+    assert senior_mids == 0  # 하위권으로 충분히 채울 수 있으면 상위권 미드 없음
+
+
 def test_carry_over_work_streak():
     # 전월 말 5일 연속 근무 → 1일차는 반드시 휴무 (연속 6일 방지)
     req = ScheduleRequest(
