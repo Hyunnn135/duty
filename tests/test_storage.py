@@ -54,6 +54,32 @@ def test_roster_save_and_sensitive_hidden(client):
     assert not pub["editable"]
 
 
+def test_ward_users_and_account_link(client):
+    master = _reg(client, "m@duty.kr", name="파트장", ward="61")
+    staff = _reg(client, "kim@duty.kr", name="김간호", ward="61")
+    _reg(client, "other@duty.kr", name="타병동", ward="99")
+    # 병동 사용자 목록: 61병동 2명만, staff는 접근 불가
+    assert client.get("/api/auth/ward-users", headers=_h(staff["token"])).status_code == 403
+    users = client.get("/api/auth/ward-users", headers=_h(master["token"])).json()
+    emails = {u["email"] for u in users}
+    assert emails == {"m@duty.kr", "kim@duty.kr"}  # 타병동 제외
+    # 명단에 계정 연결
+    nurses = [
+        {"id": "nur1", "name": "장현진", "team": 1, "seniority_rank": 1, "account_email": "kim@duty.kr"},
+        {"id": "nur2", "name": "안현영", "team": 2, "seniority_rank": 1, "account_email": ""},
+    ]
+    client.put("/api/roster", json={"nurses": nurses}, headers=_h(master["token"]))
+    # 연결된 staff는 자기 간호사(장현진)를 확인
+    mine = client.get("/api/me/nurse", headers=_h(staff["token"])).json()
+    assert mine["linked"] and mine["nurse"]["name"] == "장현진"
+    # staff의 명단 조회에는 타인의 account_email이 노출되지 않음
+    pub = client.get("/api/roster", headers=_h(staff["token"])).json()
+    assert all("account_email" not in n for n in pub["nurses"])
+    # 미연결 사용자(master 본인은 명단에 계정연결 안됨)
+    unlinked = client.get("/api/me/nurse", headers=_h(master["token"])).json()
+    assert unlinked["linked"] is False
+
+
 # ---- 근무표 발행/조회 ----
 
 def test_schedule_publish_and_view(client):
