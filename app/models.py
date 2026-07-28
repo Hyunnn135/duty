@@ -393,3 +393,12 @@ class ScheduleResponse(BaseModel):
     unmet_wanted_off: int = 0
     objective_value: int | None = None
     message: str = ""
+
+
+class CandidatesResponse(BaseModel):
+    """동일 품질의 후보 근무표 묶음 (파트장이 하나를 선택)."""
+
+    feasible: bool
+    count: int
+    candidates: list["ScheduleResponse"]
+    message: str = ""

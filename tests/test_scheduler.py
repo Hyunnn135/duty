@@ -381,3 +381,15 @@ def test_off_count_target_soft():
     # 대부분 간호사의 오프 수가 목표에서 크게 벗어나지 않는다
     for s in res.schedules:
         assert abs(s.counts["O"] - target) <= 2
+
+
+def test_solve_candidates_distinct_equal_quality():
+    """품질 수렴 집합: 동일 목적값의 서로 다른 후보 여러 개."""
+    from app.scheduler import solve_candidates
+    nurses = _nurses(9)
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=MinStaff(D=2, E=2, N=1))
+    cands = solve_candidates(req, count=3)
+    assert len(cands) >= 2 and all(c.feasible for c in cands)
+    grids = [tuple(tuple(s.shifts) for s in c.schedules) for c in cands]
+    assert len(set(grids)) == len(grids)          # 서로 다른 배치
+    assert len({c.objective_value for c in cands}) == 1  # 동일 품질(목적값)
