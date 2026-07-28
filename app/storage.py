@@ -21,10 +21,33 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from . import email_notify
 from .auth import UserInfo, get_current_user, require_roles
+
+
+def _emails_by_role(roles: tuple[str, ...], ward: str | None = None) -> list[str]:
+    """알림 수신자 이메일 목록 (users 테이블 조회). 실패 시 빈 목록."""
+    placeholders = ",".join("?" for _ in roles)
+    try:
+        conn = _conn()
+        try:
+            if ward is None:
+                rows = conn.execute(
+                    f"SELECT email FROM users WHERE role IN ({placeholders})", tuple(roles)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT email FROM users WHERE ward=? AND role IN ({placeholders})",
+                    (ward, *roles),
+                ).fetchall()
+            return [r["email"] for r in rows]
+        finally:
+            conn.close()
+    except Exception:  # users 테이블 부재 등 — 알림은 부가기능이므로 조용히 무시
+        return []
 
 # 부서원에게 공개되지 않는 민감 명단 속성 (PLAN 7.5.10)
 # account_email(계정 연결)은 타인의 것을 노출하지 않도록 부서원 조회에서 제거한다
@@ -278,6 +301,7 @@ def get_roster(user: Annotated[UserInfo, Depends(get_current_user)]) -> RosterRe
 @router.post("/schedule/publish", response_model=ScheduleResponse)
 def publish_schedule(
     body: SchedulePublish,
+    background: BackgroundTasks,
     user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
 ) -> ScheduleResponse:
     conn = _conn()
@@ -291,10 +315,18 @@ def publish_schedule(
              _now(), user.email),
         )
         conn.commit()
-        return ScheduleResponse(year=body.year, month=body.month, data=body.data,
-                                updated_at=_now(), updated_by=user.name)
     finally:
         conn.close()
+    # 발행 알림(옵트인): 병동 구성원에게 이메일 (NOTIFY_ON_PUBLISH=1 + SMTP 설정 시)
+    if email_notify.notify_on_publish():
+        emails = _emails_by_role(("staff", "admin", "master"), ward=user.ward)
+        if emails:
+            subject = f"[듀티원] {body.year}년 {body.month}월 근무표가 발행되었습니다"
+            text = (f"{user.ward or ''}병동 {body.year}년 {body.month}월 근무표가 발행되었습니다.\n"
+                    "듀티원에 로그인해 확인하세요.")
+            background.add_task(email_notify.send_email, emails, subject, text)
+    return ScheduleResponse(year=body.year, month=body.month, data=body.data,
+                            updated_at=_now(), updated_by=user.name)
 
 
 @router.get("/schedules", response_model=list[ScheduleMeta])
@@ -418,6 +450,7 @@ def list_wanted(
 @router.post("/wanted/{req_id}/decision", response_model=WantedItem)
 def decide_wanted(
     req_id: int, body: WantedDecision,
+    background: BackgroundTasks,
     user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
 ) -> WantedItem:
     body.check()
@@ -433,10 +466,19 @@ def decide_wanted(
             (body.status, user.email, _now(), req_id),
         )
         conn.commit()
-        return _wanted_item(conn.execute(
+        item = _wanted_item(conn.execute(
             "SELECT * FROM wanted_requests WHERE id=?", (req_id,)).fetchone())
     finally:
         conn.close()
+    # 신청자에게 승인/반려 결과 이메일 (미설정 시 무시)
+    if body.status in ("approved", "rejected") and row["nurse_email"]:
+        ko = "승인" if body.status == "approved" else "반려"
+        rng = f"{item.start_day}일" + (f"~{item.end_day}일" if item.end_day != item.start_day else "")
+        subject = f"[듀티원] 원티드 신청이 {ko}되었습니다 ({item.year}년 {item.month}월)"
+        text = (f"{item.nurse_name} 님의 {item.year}년 {item.month}월 원티드 신청"
+                f"({rng}, {item.shift})이 {ko}되었습니다.")
+        background.add_task(email_notify.send_email, row["nurse_email"], subject, text)
+    return item
 
 
 @router.delete("/wanted/{req_id}")
@@ -518,6 +560,7 @@ def get_window(
 @router.post("/feedback", response_model=FeedbackItem)
 def submit_feedback(
     body: FeedbackSubmit,
+    background: BackgroundTasks,
     user: Annotated[UserInfo, Depends(get_current_user)],
 ) -> FeedbackItem:
     conn = _conn()
@@ -529,9 +572,21 @@ def submit_feedback(
         )
         conn.commit()
         r = conn.execute("SELECT * FROM feedback WHERE id=?", (cur.lastrowid,)).fetchone()
-        return _feedback_item(r)
+        item = _feedback_item(r)
     finally:
         conn.close()
+    # 마스터에게 이메일 알림 (미설정 시 자동 무시)
+    masters = _emails_by_role(("master",))
+    if masters:
+        subject = f"[듀티원] 새 피드백 · {user.name}"
+        text = (
+            f"{user.name} ({user.email})"
+            f"{' · ' + user.ward + '병동' if user.ward else ''} 님이 메시지를 남겼습니다.\n\n"
+            f"{body.message}\n\n"
+            "— 듀티원 수신함에서 확인하세요."
+        )
+        background.add_task(email_notify.send_email, masters, subject, text)
+    return item
 
 
 def _feedback_item(r: sqlite3.Row) -> FeedbackItem:
