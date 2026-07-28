@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      - run: python -m pytest -q
 
       # GCP 인증 (서비스 계정 키 없이 WIF 사용)
       - id: auth
