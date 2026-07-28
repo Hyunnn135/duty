@@ -269,6 +269,32 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 sum(x[i, d, Shift.NIGHT] for d in days) <= req.max_nights_per_month
             )
 
+    # (13b) 나이트 하드 밴드: 가능자별 나이트 수를 [min, max]로 고정 → 공정성을 목적함수가
+    #       아닌 하드 제약으로 보장(최적 증명 가속 → 정확 최적). exact_mode면 자동 산출.
+    lo = req.night_min_per_nurse
+    hi = req.night_max_per_nurse
+    if req.exact_mode and lo is None and hi is None:
+        total_n = 0
+        for d in days:
+            st = req.staffing_for(d)
+            total_n += st.of(Shift.NIGHT).min if st is not None else req.min_staff.get(Shift.NIGHT)
+        elig = sum(1 for nu in nurses if nu.night_eligible)
+        if elig > 0 and total_n > 0:
+            import math as _math
+            lo = _math.floor(total_n / elig)
+            hi = _math.ceil(total_n / elig)
+            if lo == hi:  # 폭 0이면 살짝 넓혀 실현 가능성 확보
+                hi = lo + 1
+    if lo is not None or hi is not None:
+        for i, nurse in enumerate(nurses):
+            if not nurse.night_eligible:
+                continue
+            tot = sum(x[i, d, Shift.NIGHT] for d in days)
+            if lo is not None:
+                model.add(tot >= lo)
+            if hi is not None:
+                model.add(tot <= hi)
+
     # (8a) 사전 배정 (연차 등): 해당 날 OFF로 하드 고정, 표시 라벨은 코드
     label_override: dict[tuple[int, int], str] = {}
     for p in req.pre_assigned:
@@ -327,8 +353,13 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             teamoff_terms.append(excess)
 
     # (소프트) 공정성: 나이트/총근무 편차
+    # simple_fairness=True면 max-min '편차'(add_max/min_equality: reification으로 최적 증명이
+    # 느림) 대신 '최댓값 최소화'(minimize-max: 상한 제약만, reification 없음)로 근사한다.
+    # → 나이트가 특정인에게 몰리지 않게 하며, 최적해 증명이 훨씬 빨라진다(수렴 실험 §참고).
     fairness_terms: list[cp_model.IntVar] = []
-    if req.weight_fairness > 0 and N > 1:
+    if req.weight_fairness > 0 and N > 1 and not req.exact_mode:
+        # exact_mode에서는 공정성을 (13b) 하드 밴드로 보장하므로 편차 목적을 넣지 않는다
+        #   (편차/최댓값 목적은 최적 증명을 느리게 만들기 때문 — EXPERIMENT_REPORT §7).
         night_counts, work_counts = [], []
         for i in range(N):
             nc = model.new_int_var(0, nd, f"night_{i}")
@@ -337,23 +368,33 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             wc = model.new_int_var(0, nd, f"workcnt_{i}")
             model.add(wc == sum(work[i, d] for d in days))
             work_counts.append(wc)
-        # 나이트 불가 간호사는 편차 계산에서 제외
         eligible = [night_counts[i] for i in range(N) if nurses[i].night_eligible]
-        if len(eligible) > 1:
-            n_max = model.new_int_var(0, nd, "night_max")
-            n_min = model.new_int_var(0, nd, "night_min")
-            model.add_max_equality(n_max, eligible)
-            model.add_min_equality(n_min, eligible)
-            spread = model.new_int_var(0, nd, "night_spread")
-            model.add(spread == n_max - n_min)
-            fairness_terms.append(spread)
-        w_max = model.new_int_var(0, nd, "work_max")
-        w_min = model.new_int_var(0, nd, "work_min")
-        model.add_max_equality(w_max, work_counts)
-        model.add_min_equality(w_min, work_counts)
-        wspread = model.new_int_var(0, nd, "work_spread")
-        model.add(wspread == w_max - w_min)
-        fairness_terms.append(wspread)
+        if req.simple_fairness:
+            if len(eligible) > 1:
+                n_max = model.new_int_var(0, nd, "night_max")
+                for nc in eligible:
+                    model.add(n_max >= nc)
+                fairness_terms.append(n_max)  # 최댓값 최소화 → 하향 평준화
+            w_max = model.new_int_var(0, nd, "work_max")
+            for wc in work_counts:
+                model.add(w_max >= wc)
+            fairness_terms.append(w_max)
+        else:
+            if len(eligible) > 1:
+                n_max = model.new_int_var(0, nd, "night_max")
+                n_min = model.new_int_var(0, nd, "night_min")
+                model.add_max_equality(n_max, eligible)
+                model.add_min_equality(n_min, eligible)
+                spread = model.new_int_var(0, nd, "night_spread")
+                model.add(spread == n_max - n_min)
+                fairness_terms.append(spread)
+            w_max = model.new_int_var(0, nd, "work_max")
+            w_min = model.new_int_var(0, nd, "work_min")
+            model.add_max_equality(w_max, work_counts)
+            model.add_min_equality(w_min, work_counts)
+            wspread = model.new_int_var(0, nd, "work_spread")
+            model.add(wspread == w_max - w_min)
+            fairness_terms.append(wspread)
 
     # (소프트) 적정 인원 부족 감점 (INRC S1 방식)
     target_terms: list = []

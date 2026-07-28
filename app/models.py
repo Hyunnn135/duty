@@ -272,6 +272,23 @@ class ScheduleRequest(BaseModel):
         None, ge=0, description="1차 목적(소프트 합) 상한(하드). 2단계 사전식 풀이용 — "
         "먼저 구한 최적 품질값으로 고정하고 타이브레이커만 최소화할 때 사용",
     )
+    simple_fairness: bool = Field(
+        False,
+        description="공정성을 편차(max-min) 대신 최댓값-최소화로 근사 → 최적 증명이 빨라져 "
+        "정확 최적·유일해 수렴이 가능해진다(규모 큰 병동 권장, EXPERIMENT_REPORT).",
+    )
+    night_min_per_nurse: int | None = Field(
+        None, ge=0, description="나이트 공정성을 '하드 밴드'로: 나이트 가능자별 최소 나이트 수. "
+        "목적함수(편차)를 없애 최적 증명을 빠르게 → 정확 최적·유일해 수렴에 사용",
+    )
+    night_max_per_nurse: int | None = Field(
+        None, ge=0, description="나이트 가능자별 최대 나이트 수(하드 밴드 상한).",
+    )
+    exact_mode: bool = Field(
+        False,
+        description="정확 최적 모드: 나이트 공정성을 자동 하드 밴드로 옮기고 편차 목적을 제거해 "
+        "'proven OPTIMAL'(최적 증명)을 얻는다. 다소 느리지만 최고 품질을 보장(권장 #2).",
+    )
     num_workers: int = Field(8, ge=1, le=32, description="CP-SAT 병렬 워커 수. 1로 두면 결정적(재현 가능) 탐색")
 
     # ---- 검증 ----

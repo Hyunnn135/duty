@@ -26,6 +26,7 @@ D = json.loads((ROOT / "data" / "schedule.json").read_text(encoding="utf-8"))
 W = json.loads((ROOT / "data" / "wanted_2026_08.json").read_text(encoding="utf-8"))
 YEAR, MONTH, NDAYS, HOLIDAYS = 2026, 8, 31, [15]  # 광복절
 TIEBREAK = False  # 사전식 타이브레이커는 규모상 비현실적(보고서 §6) → 기본 다양화/품질 모드
+SIMPLE_FAIR = False  # 공정성을 minimize-max로 근사(최적 증명 가속) — 수렴 실험에서 True
 
 
 def norm(c: str) -> str:
@@ -83,7 +84,8 @@ def build_request(**over) -> ScheduleRequest:
     kw = dict(year=YEAR, month=MONTH, nurses=nurses, staffing=staffing, holidays=HOLIDAYS,
               carry_over=july_carry_by_id(), max_consecutive_days=5, max_consecutive_nights=3,
               max_nights_per_month=7, team_min_staff=1, enforce_night_block=True,
-              wanted=wanted, deterministic_tiebreak=TIEBREAK, time_limit_seconds=10)
+              wanted=wanted, deterministic_tiebreak=TIEBREAK, simple_fairness=SIMPLE_FAIR,
+              time_limit_seconds=10)
     kw.update(over)
     return ScheduleRequest(**kw)
 
