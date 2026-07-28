@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .alternatives import AlternativesRequest, AlternativesResponse, generate
 from .auth import UserInfo, get_current_user, require_roles, router as auth_router
 from .models import ScheduleRequest, ScheduleResponse
 from .rules_check import ValidateRequest, ValidateResponse, check
@@ -53,6 +54,15 @@ def validate_schedule(
 ) -> ValidateResponse:
     """수동 수정된 근무표의 대원칙/하드 규칙 위반을 검사한다 (PLAN 0.2 경고 단계)."""
     return check(req)
+
+
+@app.post("/api/alternatives", response_model=AlternativesResponse)
+def schedule_alternatives(
+    req: AlternativesRequest,
+    _user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
+) -> AlternativesResponse:
+    """대원칙 위반을 최소 변경으로 해소하는 대안 3안을 생성한다 (PLAN 0.2, 관리자·마스터)."""
+    return generate(req)
 
 
 @app.get("/")
