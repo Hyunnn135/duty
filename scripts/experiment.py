@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 D = json.loads((ROOT / "data" / "schedule.json").read_text(encoding="utf-8"))
 W = json.loads((ROOT / "data" / "wanted_2026_08.json").read_text(encoding="utf-8"))
 YEAR, MONTH, NDAYS, HOLIDAYS = 2026, 8, 31, [15]  # 광복절
-TIEBREAK = True  # 결정적 타이브레이커(수렴 실험). False면 다양화 상태
+TIEBREAK = False  # 사전식 타이브레이커는 규모상 비현실적(보고서 §6) → 기본 다양화/품질 모드
 
 
 def norm(c: str) -> str:
