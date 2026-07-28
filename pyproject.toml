@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# 저장소 루트를 import 경로에 추가해 `pytest`(맨 명령)와 `python -m pytest` 모두에서
+# `app` 패키지를 임포트할 수 있게 한다. (CI는 맨 pytest를 사용)
+pythonpath = ["."]
+testpaths = ["tests"]
