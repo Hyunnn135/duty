@@ -1,0 +1,199 @@
+# 배포 가이드 — CI/CD & Cloud Run
+
+간호사 근무표 앱(FastAPI + OR-Tools)을 **GitHub Actions → Google Cloud Run**으로
+자동 배포하는 설정이다. 비용은 소규모 사용 시 사실상 무료에 가깝다(PLAN 7.5.2).
+
+- **CI** (`.github/workflows/ci.yml`): 모든 push·PR에서 테스트 실행.
+- **CD** (`.github/workflows/deploy.yml`): `main` 병합(또는 수동 실행) 시 테스트 →
+  컨테이너 빌드(Cloud Build) → Cloud Run 배포.
+
+---
+
+## 0. 개요 · 아키텍처
+
+```
+GitHub push(main) ──▶ GitHub Actions
+                         │  (Workload Identity Federation, 키 없음)
+                         ▼
+                    Cloud Build (Dockerfile 빌드)
+                         ▼
+                    Cloud Run 서비스 (단일 인스턴스)
+                         │  DUTY_DB=/data/duty.db
+                         ▼
+                    GCS 버킷 볼륨 (/data 마운트, SQLite 영속화)
+                    Secret Manager: duty-secret (JWT 서명키)
+```
+
+> **DB 영속화 주의**: Cloud Run 컨테이너는 상태가 없어 재시작 시 로컬 파일이 사라진다.
+> 그래서 SQLite 파일을 **GCS 버킷 볼륨(/data)** 에 두고 `--min/max-instances 1`(단일
+> 인스턴스)로 고정한다. 한 병동 규모 MVP에는 충분하다. 사용자가 늘면(여러 병동·동시성)
+> **Postgres(Supabase/Cloud SQL)로 이관**을 권장한다(§6).
+
+---
+
+## 1. 사전 준비
+
+- GCP 프로젝트(결제 연결됨) — `PROJECT_ID`
+- 로컬에 `gcloud` CLI 설치 & 로그인: `gcloud auth login && gcloud config set project PROJECT_ID`
+- 리전 결정(예: `asia-northeast3` 서울)
+
+아래 변수를 셸에 설정해두면 편하다:
+
+```bash
+export PROJECT_ID=$(gcloud config get-value project)
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+export REGION=asia-northeast3
+export SERVICE=duty
+export BUCKET=${PROJECT_ID}-duty-data
+export REPO_OWNER_SLASH_NAME=Hyunnn135/duty   # GitHub owner/repo
+```
+
+## 2. API 활성화
+
+```bash
+gcloud services enable \
+  run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com secretmanager.googleapis.com \
+  iamcredentials.googleapis.com storage.googleapis.com
+```
+
+## 3. SQLite 영속화용 GCS 버킷
+
+```bash
+gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-bucket-level-access
+```
+
+## 4. JWT 서명키 시크릿
+
+```bash
+# 강력한 랜덤 키 생성 후 Secret Manager에 저장
+python -c "import secrets;print(secrets.token_urlsafe(48))" | \
+  gcloud secrets create duty-secret --data-file=-
+# 키를 교체할 때: gcloud secrets versions add duty-secret --data-file=-
+```
+
+## 5. 배포용 서비스 계정 + 런타임 권한
+
+```bash
+# (a) CI가 사용할 배포 서비스 계정
+gcloud iam service-accounts create duty-deployer \
+  --display-name="Duty CI deployer"
+export DEPLOYER=duty-deployer@${PROJECT_ID}.iam.gserviceaccount.com
+
+for ROLE in \
+  roles/run.admin \
+  roles/cloudbuild.builds.editor \
+  roles/artifactregistry.admin \
+  roles/storage.admin \
+  roles/iam.serviceAccountUser ; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${DEPLOYER}" --role="$ROLE"
+done
+
+# (b) Cloud Run 런타임 서비스 계정(기본 compute SA)에
+#     시크릿 접근 + 버킷 읽기/쓰기 권한 부여
+export RUNTIME=${PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+gcloud secrets add-iam-policy-binding duty-secret \
+  --member="serviceAccount:${RUNTIME}" --role=roles/secretmanager.secretAccessor
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+  --member="serviceAccount:${RUNTIME}" --role=roles/storage.objectAdmin
+```
+
+## 6. Workload Identity Federation (키리스 인증)
+
+GitHub Actions가 서비스 계정 키 파일 없이 GCP에 인증하도록 연동한다.
+
+```bash
+# 풀 생성
+gcloud iam workload-identity-pools create github-pool \
+  --location=global --display-name="GitHub pool"
+
+export POOL_ID=$(gcloud iam workload-identity-pools describe github-pool \
+  --location=global --format='value(name)')
+
+# 공급자 생성 (이 저장소에서 오는 토큰만 허용)
+gcloud iam workload-identity-pools providers create-oidc github-provider \
+  --location=global --workload-identity-pool=github-pool \
+  --display-name="GitHub provider" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository=='${REPO_OWNER_SLASH_NAME}'" \
+  --issuer-uri="https://token.actions.githubusercontent.com"
+
+# 배포 SA를 이 저장소가 임시토큰으로 위임할 수 있도록 바인딩
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/${POOL_ID}/attribute.repository/${REPO_OWNER_SLASH_NAME}"
+
+# GitHub 시크릿에 넣을 공급자 리소스명 출력
+gcloud iam workload-identity-pools providers describe github-provider \
+  --location=global --workload-identity-pool=github-pool \
+  --format='value(name)'
+```
+
+## 7. GitHub 저장소에 변수·시크릿 등록
+
+**Settings → Secrets and variables → Actions**
+
+Repository **secrets**:
+| 이름 | 값 |
+|------|-----|
+| `GCP_WIF_PROVIDER` | §6 마지막 명령이 출력한 공급자 리소스명 (`projects/…/providers/github-provider`) |
+| `GCP_SA_EMAIL` | `duty-deployer@PROJECT_ID.iam.gserviceaccount.com` |
+
+Repository **variables**:
+| 이름 | 값(예) |
+|------|--------|
+| `GCP_PROJECT_ID` | `PROJECT_ID` |
+| `GCP_REGION` | `asia-northeast3` |
+| `SERVICE_NAME` | `duty` |
+| `DATA_BUCKET` | `${PROJECT_ID}-duty-data` |
+
+## 8. 첫 배포
+
+- `main`에 병합하면 자동 실행되거나,
+- **Actions 탭 → Deploy to Cloud Run → Run workflow** 로 수동 실행.
+
+로컬에서 먼저 확인하고 싶다면:
+
+```bash
+gcloud run deploy "$SERVICE" --source . --region "$REGION" \
+  --allow-unauthenticated --execution-environment gen2 \
+  --cpu 2 --memory 1Gi --concurrency 8 --min-instances 1 --max-instances 1 \
+  --set-env-vars DUTY_DB=/data/duty.db \
+  --set-secrets DUTY_SECRET=duty-secret:latest \
+  --add-volume name=data,type=cloud-storage,bucket="$BUCKET" \
+  --add-volume-mount volume=data,mount-path=/data
+```
+
+배포 후 출력된 URL의 `/health`가 `{"status":"ok"}`를 반환하면 성공. 첫 접속 사용자가
+자동으로 **마스터**가 된다.
+
+---
+
+## 로컬에서 컨테이너 검증 (선택)
+
+```bash
+docker build -t duty:local .
+docker run --rm -p 8080:8080 -e DUTY_SECRET=devsecret -e DUTY_DB=/data/duty.db duty:local
+# 다른 터미널: curl localhost:8080/health
+```
+
+## 운영 메모
+
+- **콜드스타트**: OR-Tools 임포트로 최초 기동 ~8초. `--min-instances 1`로 상시 1대를
+  띄워 콜드스타트와 SQLite 단일 인스턴스 일관성을 동시에 해결한다.
+- **동시성**: 근무표 생성은 CPU를 많이 쓰므로 `--concurrency 8`, `--cpu 2`로 제한.
+- **비용**: 단일 인스턴스 상시 가동 + 소규모 트래픽 기준 월 소액(수 달러 내외). GCS·시크릿·
+  빌드도 무료 티어 범위 내. 정확한 비용은 GCP 요금 계산기로 확인.
+
+## 확장(Postgres 이관) 경로 — 사용자·병동이 늘면
+
+SQLite+단일 인스턴스는 한 병동 MVP용이다. 여러 병동·다수 동시 사용자로 커지면:
+
+1. Supabase(무료 티어) 또는 Cloud SQL(Postgres) 프로비저닝.
+2. `app/auth.py`·`app/storage.py`의 `sqlite3` 접근을 Postgres 드라이버로 교체
+   (스키마는 이미 `ward`로 테넌트 스코프되어 있어 RLS 적용이 쉽다 — PLAN 7.5.5).
+3. `--min/max-instances` 제한을 풀고 자동 확장 활성화, GCS 볼륨 마운트 제거.
+4. `DUTY_DB` 대신 `DATABASE_URL` 환경변수로 연결.
+
+이 변경은 라우터·프론트엔드를 건드리지 않고 데이터 접근 계층만 교체하면 된다.
