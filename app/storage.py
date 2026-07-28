@@ -27,9 +27,11 @@ from pydantic import BaseModel, Field
 from .auth import UserInfo, get_current_user, require_roles
 
 # 부서원에게 공개되지 않는 민감 명단 속성 (PLAN 7.5.10)
+# account_email(계정 연결)은 타인의 것을 노출하지 않도록 부서원 조회에서 제거한다
+# (본인 연결 정보는 /api/me/nurse 로 별도 제공).
 SENSITIVE_NURSE_FIELDS = {
     "seniority_rank", "night_eligible", "is_trainee", "trainer",
-    "trainer_id", "competency", "employment", "note", "memo",
+    "trainer_id", "competency", "employment", "note", "memo", "account_email",
 }
 
 
@@ -111,6 +113,11 @@ class RosterResponse(BaseModel):
     nurses: list[dict[str, Any]]
     updated_at: str | None = None
     editable: bool = False  # 현재 사용자가 편집 가능한지(관리자·마스터)
+
+
+class MyNurse(BaseModel):
+    linked: bool
+    nurse: dict[str, Any] | None = None  # 연결된 명단 항목(본인 것이므로 전체 노출)
 
 
 class SchedulePublish(BaseModel):
@@ -230,6 +237,22 @@ def save_roster(
         )
         conn.commit()
         return RosterResponse(nurses=body.nurses, updated_at=_now(), editable=True)
+    finally:
+        conn.close()
+
+
+@router.get("/me/nurse", response_model=MyNurse)
+def my_nurse(user: Annotated[UserInfo, Depends(get_current_user)]) -> MyNurse:
+    """현재 로그인 사용자와 연결된 명단 간호사를 반환 (account_email 매칭)."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
+        if not row:
+            return MyNurse(linked=False)
+        for n in json.loads(row["data"]):
+            if str(n.get("account_email", "")).strip().lower() == user.email.lower():
+                return MyNurse(linked=True, nurse=n)
+        return MyNurse(linked=False)
     finally:
         conn.close()
 

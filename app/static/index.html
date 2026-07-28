@@ -87,7 +87,8 @@
   </div>
   <div id="userBox" style="display:none;text-align:right;font-size:13px;">
     <div id="userName" style="font-weight:700"></div>
-    <div id="userRole" class="muted" style="margin:2px 0 6px"></div>
+    <div id="userRole" class="muted" style="margin:2px 0 2px"></div>
+    <div id="linkHint" style="font-size:11px;margin-bottom:6px"></div>
     <button class="sm" onclick="logout()" style="background:#334155">로그아웃</button>
   </div>
 </header>
@@ -146,7 +147,7 @@
           <thead><tr>
             <th style="min-width:110px">이름</th><th>팀</th><th title="1=최고참">경력순위</th>
             <th title="임신·산후 시 해제">나이트</th><th title="입사 첫 달 교육">트레이닝</th>
-            <th>교육자</th><th></th>
+            <th>교육자</th><th title="이 간호사에 로그인 계정 연결">계정</th><th></th>
           </tr></thead>
           <tbody id="rosterBody"></tbody>
         </table>
@@ -342,13 +343,27 @@ async function onAuthed() {
     if (r.nurses && r.nurses.length) roster = r.nurses.map(normRosterRow);
     else if (isAdmin()) seedRoster();
   } catch (e) { if (isAdmin() && roster.length === 0) seedRoster(); }
-  renderRoster();
+  // 병동 사용자 목록(연결 드롭다운용, 관리자만)
+  if (isAdmin()) { try { wardUsers = await api("GET", "/api/auth/ward-users"); } catch (e) { wardUsers = []; } }
+  // 내 계정과 연결된 명단 간호사
+  try { const mn = await api("GET", "/api/me/nurse"); MY_NURSE = mn.linked ? mn.nurse : null; } catch (e) { MY_NURSE = null; }
+  renderRoster(); renderLinkHint();
   // 발행된 근무표를 서버에서 우선 로드(부서원 포함). 없으면 로컬 복원.
   await loadPublished();
 }
 function normRosterRow(n) {
-  return { name: n.name || "", team: n.team || 1, rank: n.seniority_rank || n.rank || 1,
-    night: n.night_eligible !== false, trainee: !!n.is_trainee, trainer: n.trainer || "" };
+  return { id: n.id || genId(), name: n.name || "", team: n.team || 1,
+    rank: n.seniority_rank || n.rank || 1, night: n.night_eligible !== false,
+    trainee: !!n.is_trainee, trainer: n.trainer || "", account: n.account_email || "" };
+}
+function genId() { try { return "nur_" + crypto.randomUUID().slice(0, 8); } catch (e) { return "nur_" + Math.floor(Math.random() * 1e9); } }
+// 내 근무 이름: 연결된 명단 이름 우선, 없으면 계정 표시명
+function myNurseName() { return (MY_NURSE && MY_NURSE.name) || (ME && ME.name) || ""; }
+function renderLinkHint() {
+  const el = document.getElementById("linkHint"); if (!el) return;
+  if (MY_NURSE) el.innerHTML = `연결됨: <b>${esc(MY_NURSE.name)}</b>${MY_NURSE.team?` (${MY_NURSE.team}팀)`:""}`;
+  else if (!isAdmin()) el.innerHTML = `<span style="color:var(--warn)">명단 미연결 — 부서장에게 계정 연결을 요청하세요.</span>`;
+  else el.textContent = "";
 }
 
 /* ============================ 탭 ============================ */
@@ -380,7 +395,9 @@ function switchTab(k) {
 }
 
 /* ============================ 명단(로스터) ============================ */
-let roster = []; // {name, team, rank, night, trainee, trainer}
+let roster = []; // {id, name, team, rank, night, trainee, trainer, account}
+let wardUsers = []; // [{email,name,role}] — 계정 연결 드롭다운용
+let MY_NURSE = null; // 현재 사용자와 연결된 명단 간호사
 function seedRoster() {
   // 3팀 × 8명 = 24명 (경력순위 1=최고참). D/E/N=4명 정원을 충족할 실규모 예시.
   const names = [
@@ -389,10 +406,17 @@ function seedRoster() {
     ["이지우",3],["윤지호",3],["임채원",3],["권나래",3],["황도현",3],["서예린",3],["남태희",3],["고은솔",3],
   ];
   roster = names.map(([name, team], i) => ({
-    name, team, rank: (i % 8) + 1, night: true, trainee: false, trainer: "",
+    id: genId(), name, team, rank: (i % 8) + 1, night: true, trainee: false, trainer: "", account: "",
   }));
 }
-function addNurse() { roster.push({ name: "", team: 1, rank: roster.length + 1, night: true, trainee: false, trainer: "" }); renderRoster(); }
+function addNurse() { roster.push({ id: genId(), name: "", team: 1, rank: roster.length + 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
+function accountOptions(sel) {
+  const opts = [`<option value="">— 미연결 —</option>`];
+  for (const u of wardUsers) opts.push(`<option value="${esc(u.email)}" ${u.email===sel?"selected":""}>${esc(u.name)} (${esc(u.email)})</option>`);
+  // 목록에 없지만 이미 저장된 이메일이면 유지
+  if (sel && !wardUsers.some(u => u.email === sel)) opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
+  return opts.join("");
+}
 function renderRoster() {
   const body = document.getElementById("rosterBody");
   if (!body) return;
@@ -407,6 +431,7 @@ function renderRoster() {
       `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
       `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
       `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
+      `<td><select onchange="setR(${i},'account',this.value)">${accountOptions(r.account)}</select></td>` +
       `<td class="chk"><button class="sm danger" onclick="delNurse(${i})" title="삭제">×</button></td>`;
     body.appendChild(tr);
   });
@@ -501,10 +526,13 @@ function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED
 async function saveRoster() {
   try {
     const nurses = roster.filter(r => r.name.trim()).map(r => ({
-      name: r.name.trim(), team: r.team, seniority_rank: r.rank,
-      night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "" }));
+      id: r.id || genId(), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+      night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "",
+      account_email: (r.account || "").trim() }));
     await api("PUT", "/api/roster", { nurses });
-    rosterMsg("✅ 명단을 저장했습니다.");
+    rosterMsg("✅ 명단을 저장했습니다. (계정 연결 포함)");
+    // 저장 후 내 연결 정보 갱신
+    try { const mn = await api("GET", "/api/me/nurse"); MY_NURSE = mn.linked ? mn.nurse : null; renderLinkHint(); } catch (e) {}
   } catch (e) { rosterMsg("저장 실패: " + e.message, true); }
 }
 function rosterMsg(m, err) { const el = document.getElementById("rosterMsg"); if (el) { el.textContent = m; el.style.color = err ? "var(--err)" : "var(--ok)"; } }
@@ -562,7 +590,7 @@ function renderBoard() {
     : `<div class="status err">❌ ${esc(SCHED.message||"생성 실패")}</div>`;
 
   let rows = SCHED.schedules.map((s,i)=>({ ...s, team: SCHED.teams?.[s.name]||1, _i:i }));
-  if (document.getElementById("onlyMine").checked && ME) rows = rows.filter(r => r.name === ME.name);
+  if (document.getElementById("onlyMine").checked) { const mn = myNurseName(); rows = rows.filter(r => r.name === mn); }
   rows.sort((a,b)=> a.team-b.team || a._i-b._i);
 
   // header
@@ -649,7 +677,12 @@ function renderStats(){
   if (!has) return;
   let list = SCHED.schedules.slice();
   const staffOnly = !isAdmin();
-  if (staffOnly && ME) list = list.filter(s=>s.name===ME.name);
+  if (staffOnly) { const mn = myNurseName(); list = list.filter(s=>s.name===mn); }
+  if (staffOnly && !list.length) {
+    document.getElementById("statsBody").innerHTML =
+      `<div class="card"><span class="muted">${MY_NURSE?"이 달의 내 근무 데이터가 없습니다.":"명단에 계정이 연결되지 않아 내 통계를 표시할 수 없습니다. 부서장에게 연결을 요청하세요."}</span></div>`;
+    return;
+  }
 
   // 개인별 카운트 표
   let rows = list.map(s=>{ const c=s.counts||{}; return `<tr><td class="name" style="text-align:left">${esc(s.name)}</td><td>${c.D||0}</td><td>${c.E||0}</td><td>${c.N||0}</td><td>${c.M||0}</td><td>${c.O||0}</td></tr>`; }).join("");

@@ -99,6 +99,12 @@ class SetRoleRequest(BaseModel):
             raise HTTPException(422, f"역할은 {ROLES} 중 하나여야 합니다.")
 
 
+class WardUser(BaseModel):
+    email: str
+    name: str
+    role: str
+
+
 # ---- 토큰/의존성 ----
 
 def _make_token(user: sqlite3.Row) -> str:
@@ -194,6 +200,22 @@ def login(body: LoginRequest) -> TokenResponse:
 @router.get("/me", response_model=UserInfo)
 def me(user: Annotated[UserInfo, Depends(get_current_user)]) -> UserInfo:
     return user
+
+
+@router.get("/ward-users", response_model=list[WardUser])
+def ward_users(
+    user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
+) -> list[WardUser]:
+    """같은 병동의 가입 사용자 목록 — 명단↔계정 연결 드롭다운용 (관리자·마스터 전용)."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT email, name, role FROM users WHERE ward=? ORDER BY name",
+            (user.ward,),
+        ).fetchall()
+        return [WardUser(email=r["email"], name=r["name"], role=r["role"]) for r in rows]
+    finally:
+        conn.close()
 
 
 @router.post("/set-role", response_model=UserInfo)
