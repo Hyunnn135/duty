@@ -16,9 +16,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .alternatives import AlternativesRequest, AlternativesResponse, generate
 from .auth import UserInfo, get_current_user, require_roles, router as auth_router
-from .models import ScheduleRequest, ScheduleResponse
+from .models import CandidatesResponse, ScheduleRequest, ScheduleResponse
 from .rules_check import ValidateRequest, ValidateResponse, check
-from .scheduler import solve
+from .scheduler import solve, solve_candidates
 from .storage import router as storage_router
 
 app = FastAPI(
@@ -45,6 +45,27 @@ def create_schedule(
 ) -> ScheduleResponse:
     """근무표를 생성해 반환한다 (관리자·마스터 전용)."""
     return solve(req)
+
+
+@app.post("/api/schedule/candidates", response_model=CandidatesResponse)
+def create_candidates(
+    req: ScheduleRequest,
+    _user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
+    count: int = 3,
+) -> CandidatesResponse:
+    """동일 최적 품질의 서로 다른 근무표 후보 여러 개를 생성한다 (관리자·마스터).
+
+    '단일 유일해' 수렴은 이 규모에서 계산적으로 비현실적이므로(EXPERIMENT_REPORT §3),
+    품질이 동일한 후보들을 제시해 파트장이 선택하도록 한다(권장안).
+    """
+    count = max(1, min(count, 5))
+    cands = solve_candidates(req, count=count)
+    feasible = bool(cands and cands[0].feasible)
+    real = [c for c in cands if c.feasible]
+    msg = (f"{len(real)}개의 동일 품질 후보를 생성했습니다." if feasible
+           else (cands[0].message if cands else "생성 실패"))
+    return CandidatesResponse(feasible=feasible, count=len(real),
+                              candidates=real if feasible else cands, message=msg)
 
 
 @app.post("/api/validate", response_model=ValidateResponse)

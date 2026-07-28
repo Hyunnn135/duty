@@ -692,3 +692,32 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective_value=obj_val,
         message="근무표 생성 완료" + (" (최적해)" if status == cp_model.OPTIMAL else ""),
     )
+
+
+def _forbid(res: ScheduleResponse) -> dict[str, list[str]]:
+    return {s.nurse_id: [x.value for x in s.shifts] for s in res.schedules}
+
+
+def solve_candidates(req: ScheduleRequest, count: int = 3) -> list[ScheduleResponse]:
+    """동일 최적 품질의 '서로 다른' 근무표 후보를 최대 count개 생성한다 (파트장 선택용).
+
+    첫 해의 목적값 O*를 상한으로 고정하고, 앞서 나온 해를 no-good으로 금지하며 재풀이한다.
+    → 품질(목적함수)은 동일하고 배치만 다른 후보들. 더 못 만들면 개수가 줄어든다(품질 수렴).
+    """
+    first = solve(req)
+    if not first.feasible:
+        return [first]
+    ostar = first.objective_value
+    out = [first]
+    forbidden = [_forbid(first)]
+    for j in range(1, max(1, count)):
+        nxt = solve(req.model_copy(update={
+            "objective_max": ostar,
+            "forbidden_solutions": list(forbidden),
+            "random_seed": j * 7 + 1,
+        }))
+        if not nxt.feasible:
+            break
+        out.append(nxt)
+        forbidden.append(_forbid(nxt))
+    return out

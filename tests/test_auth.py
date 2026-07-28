@@ -123,3 +123,18 @@ def test_validate_carry_over_boundary(client):
     data = r.json()
     assert not data["ok"]
     assert any(v["principle"] == "P1" and v["day"] == 1 for v in data["violations"])
+
+
+def test_candidates_endpoint(client):
+    master = _register(client, "m@duty.kr")
+    staff = _register(client, "s@duty.kr")
+    # 일반 부서원 → 403
+    assert client.post("/api/schedule/candidates", json=SCHED_PAYLOAD,
+                       headers=_auth(staff["token"])).status_code == 403
+    # 마스터 → 동일 품질 후보 여러 개
+    r = client.post("/api/schedule/candidates?count=3", json=SCHED_PAYLOAD,
+                    headers=_auth(master["token"]))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["feasible"] and data["count"] >= 1
+    assert all(c["feasible"] for c in data["candidates"])

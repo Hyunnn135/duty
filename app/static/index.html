@@ -181,8 +181,11 @@
 
     <div class="row" style="margin-bottom:8px">
       <button id="genBtn" onclick="generate()">근무표 생성</button>
+      <button id="candBtn" class="ghost" onclick="generateCandidates()">🎲 여러 안 생성(3)</button>
       <span id="genState" class="muted"></span>
     </div>
+    <div id="candBox"></div>
+    <div class="hint">여러 안: 동일 품질의 서로 다른 후보를 만들어 파트장이 선택합니다. (단일 유일해 수렴은 병동 규모상 비현실적 — docs/EXPERIMENT_REPORT.md)</div>
   </section>
 
   <!-- ============ 근무표 ============ -->
@@ -519,6 +522,43 @@ async function generate() {
     switchTab("board"); renderBoard();
   } catch (e) { genState.textContent = "요청 실패: " + e.message; }
   finally { btn.disabled = false; btn.textContent = "근무표 생성"; }
+}
+
+/* ============================ 여러 안 생성(품질 수렴 집합) ============================ */
+let CANDS = [], CAND_PAYLOAD = null;
+async function generateCandidates() {
+  if (!isAdmin()) return;
+  const payload = buildPayload();
+  if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
+  CAND_PAYLOAD = payload;
+  candBtn.disabled = true; genState.textContent = "⏳ 동일 품질 후보들을 계산 중...";
+  candBox.innerHTML = "";
+  try {
+    const data = await api("POST", "/api/schedule/candidates?count=3", payload);
+    if (!data.feasible || !data.candidates.length) { genState.textContent = "❌ " + esc(data.message || "실패"); return; }
+    CANDS = data.candidates;
+    genState.textContent = `✅ ${data.count}개 후보 생성`;
+    let html = `<div class="card"><h2 style="font-size:14px">🎲 후보 선택 <span class="sub">${esc(data.message)}</span></h2>`;
+    CANDS.forEach((c, i) => {
+      const nights = c.schedules.map(s => (s.counts && s.counts.N) || 0);
+      const nmin = Math.min(...nights), nmax = Math.max(...nights);
+      html += `<div class="row" style="padding:8px 0;border-top:1px solid var(--border)">
+        <strong>안 ${i + 1}</strong>
+        <span class="muted">품질값 ${c.objective_value ?? "-"} · 미반영 원티드오프 ${c.unmet_wanted_off} · 나이트 ${nmin}~${nmax}</span>
+        <span style="margin-left:auto"></span><button class="sm" onclick="applyCandidate(${i})">이 안 선택</button></div>`;
+    });
+    html += `</div>`;
+    candBox.innerHTML = html;
+  } catch (e) { genState.textContent = "요청 실패: " + e.message; }
+  finally { candBtn.disabled = false; }
+}
+function applyCandidate(i) {
+  const c = CANDS[i], p = CAND_PAYLOAD; if (!c || !p) return;
+  SCHED = { ...c, year: p.year, month: p.month,
+    teams: Object.fromEntries(p.nurses.map(n => [n.name, n.team])),
+    carry_over: p.carry_over, nurseIds: Object.fromEntries(p.nurses.map(n => [n.name, n.id])) };
+  store(); candBox.innerHTML = ""; genState.textContent = `✅ 안 ${i + 1} 선택됨`;
+  switchTab("board"); renderBoard();
 }
 
 /* ============================ 저장/복원 ============================ */
