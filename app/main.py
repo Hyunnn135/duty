@@ -18,6 +18,7 @@ from .auth import UserInfo, get_current_user, require_roles, router as auth_rout
 from .models import ScheduleRequest, ScheduleResponse
 from .rules_check import ValidateRequest, ValidateResponse, check
 from .scheduler import solve
+from .storage import router as storage_router
 
 app = FastAPI(
     title="간호사 근무표 자동 생성",
@@ -28,6 +29,7 @@ app = FastAPI(
 STATIC_DIR = Path(__file__).parent / "static"
 
 app.include_router(auth_router)
+app.include_router(storage_router)
 
 
 @app.get("/health")
