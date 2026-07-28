@@ -45,6 +45,13 @@ from .models import (
 
 ALL_SHIFTS: list[Shift] = [*WORK_SHIFTS, Shift.OFF]
 
+# 결정적 타이브레이커용: 교대 선호 순서(작을수록 우선). D를 0으로 둬 기본 선호.
+TIEBREAK_ORDER: dict[Shift, int] = {
+    Shift.DAY: 0, Shift.MID: 1, Shift.EVENING: 2, Shift.NIGHT: 3, Shift.OFF: 4,
+}
+# 1차 목적을 사전식으로 우선시키는 배수(타이브레이크 최대치보다 크게).
+_TIEBREAK_BIG = 2_000_000
+
 
 def _preflight(req: ScheduleRequest) -> str | None:
     """명백히 풀 수 없는 입력을 사전 차단. 문제 있으면 사유 문자열 반환."""
@@ -297,20 +304,27 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             model.add(miss == 1 - x[i, d, w.shift])
             (wanted_off_terms if w.shift == Shift.OFF else wanted_work_terms).append(miss)
 
-    # (E4) 같은 팀 내 원티드 오프는 같은 날 겹치지 않게 (하드): 팀·날짜별로 오프
-    #      신청자 중 실제 오프는 최대 1명. (신청 단계 검증과 병행 — PLAN 7.5)
-    if req.exclusive_team_wanted_off:
-        team_day_off: dict[tuple[int, int], list[int]] = {}
-        for w in req.wanted:
-            if w.nurse_id not in idx or w.shift != Shift.OFF:
-                continue
-            i = idx[w.nurse_id]
-            team = nurses[i].team
-            for d in w.days():
-                team_day_off.setdefault((team, d), []).append(i)
-        for (_team, d), members in team_day_off.items():
-            if len(set(members)) >= 2:
-                model.add(sum(x[i, d, Shift.OFF] for i in set(members)) <= 1)
+    # (E4) 같은 팀 원티드 오프 겹침: 하드(옵트인) 또는 소프트(기본).
+    #      실데이터 검증상 실제로는 원티드 우선으로 겹침을 허용하므로 기본은 소프트 감점.
+    team_day_off: dict[tuple[int, int], list[int]] = {}
+    for w in req.wanted:
+        if w.nurse_id not in idx or w.shift != Shift.OFF:
+            continue
+        i = idx[w.nurse_id]
+        team = nurses[i].team
+        for d in w.days():
+            team_day_off.setdefault((team, d), []).append(i)
+    teamoff_terms: list = []
+    for (_team, d), members in team_day_off.items():
+        members = list(set(members))
+        if len(members) < 2:
+            continue
+        if req.exclusive_team_wanted_off:
+            model.add(sum(x[i, d, Shift.OFF] for i in members) <= 1)  # 하드
+        elif req.weight_team_off_overlap > 0:
+            excess = model.new_int_var(0, len(members), f"toff_{_team}_{d}")
+            model.add(excess >= sum(x[i, d, Shift.OFF] for i in members) - 1)
+            teamoff_terms.append(excess)
 
     # (소프트) 공정성: 나이트/총근무 편차
     fairness_terms: list[cp_model.IntVar] = []
@@ -503,6 +517,32 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                         model.add(p >= be - x[i, d + k, Shift.OFF])
                         nightkeep_terms.append(p)
 
+    # (소프트) 근무 텀 5일(최대치) 지양 — 3~4일 텀 선호 (웹리서치: 연속근무 짧을수록 피로↓)
+    longblock_terms: list = []
+    if req.weight_long_block > 0:
+        for i in range(N):
+            for d in range(nd - 4):
+                b = model.new_bool_var(f"long5_{i}_{d}")
+                model.add(b >= sum(work[i, d + k] for k in range(5)) - 4)
+                longblock_terms.append(b)
+
+    # (소프트) 주말 오프 공정성 — 주말(토·일) 오프 수의 인당 편차 최소화 (웹리서치: 주말 공정 분배)
+    weekendfair_terms: list = []
+    fw2 = req.first_weekday()
+    if req.weight_weekend_fair > 0 and fw2 is not None and N > 1:
+        wke_counts = []
+        for i in range(N):
+            wc = model.new_int_var(0, nd, f"wke_{i}")
+            model.add(wc == sum(x[i, d, Shift.OFF] for d in days if (fw2 + d) % 7 >= 5))
+            wke_counts.append(wc)
+        wmax = model.new_int_var(0, nd, "wke_max")
+        wmin = model.new_int_var(0, nd, "wke_min")
+        model.add_max_equality(wmax, wke_counts)
+        model.add_min_equality(wmin, wke_counts)
+        wspread = model.new_int_var(0, nd, "wke_spread")
+        model.add(wspread == wmax - wmin)
+        weekendfair_terms.append(wspread)
+
     # ---- 목적 함수 ----
     objective = []
     if wanted_off_terms:
@@ -533,13 +573,69 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_seniority_mix * sum(seniority_terms))
     if nightkeep_terms:
         objective.append(req.weight_night_keep * sum(nightkeep_terms))
-    if objective:
-        model.minimize(sum(objective))
+    if teamoff_terms:
+        objective.append(req.weight_team_off_overlap * sum(teamoff_terms))
+    if longblock_terms:
+        objective.append(req.weight_long_block * sum(longblock_terms))
+    if weekendfair_terms:
+        objective.append(req.weight_weekend_fair * sum(weekendfair_terms))
+    # 결정적 타이브레이커(선택): 동일 품질(1차 목적) 해가 여럿일 때 유일해로 수렴시키기 위해
+    #   1차 목적을 큰 배수로 우선(사전식), 그 아래 셀 위치·교대 순서로 정해진 미세 비용을 더한다.
+    #   → '인위적'이지만 재현·수렴을 위한 결정적 규칙 (PLAN·보고서에 명시).
+    obj_expr = sum(objective) if objective else None
+    if req.deterministic_tiebreak:
+        tb_terms = []
+        for i in range(N):
+            base = i * nd
+            for d in days:
+                wgt = base + d + 1
+                for s in ALL_SHIFTS:
+                    ord_s = TIEBREAK_ORDER[s]
+                    if ord_s:
+                        tb_terms.append((wgt * ord_s) * x[i, d, s])
+        tb = sum(tb_terms) if tb_terms else 0
+        if req.primary_max is not None:
+            # 품질(1차 목적)이 primary_max로 이미 하드 고정됨 → 타이브레이커만 최소화(빠름·정확)
+            obj_expr = tb
+        else:
+            # 단일 solve 사전식(느릴 수 있음): 품질을 큰 배수로 우선
+            obj_expr = _TIEBREAK_BIG * (sum(objective) if objective else 0) + tb
+
+    # (실험) 1차 목적(품질) 상한 — 2단계 사전식 풀이: 품질을 최적값으로 고정 후 타이브레이크만
+    if req.primary_max is not None and objective:
+        model.add(sum(objective) <= req.primary_max)
+
+    # (실험) 목적함수 상한 고정 — '동일 품질의 다른 해'만 탐색
+    if req.objective_max is not None and obj_expr is not None:
+        model.add(obj_expr <= req.objective_max)
+
+    # (실험) 이전 해 금지(no-good) — 서로 다른 해 열거
+    total_cells = N * nd
+    for sol in req.forbidden_solutions:
+        lits = []
+        for nid, seq in sol.items():
+            if nid not in idx:
+                continue
+            i = idx[nid]
+            for d in days:
+                if d < len(seq):
+                    try:
+                        lits.append(x[i, d, Shift(seq[d])])
+                    except ValueError:
+                        pass  # 알 수 없는 값은 무시
+        if lits:
+            model.add(sum(lits) <= total_cells - 1)
+
+    if obj_expr is not None:
+        model.minimize(obj_expr)
 
     # ---- 풀기 ----
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = req.time_limit_seconds
     solver.parameters.num_search_workers = 8
+    if req.random_seed is not None:
+        solver.parameters.random_seed = req.random_seed
+        solver.parameters.randomize_search = True
     status = solver.solve(model)
 
     status_name = solver.status_name(status)
@@ -584,6 +680,8 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         sum(int(solver.value(t)) for t in wanted_off_terms) if wanted_off_terms else 0
     )
 
+    obj_val = int(round(solver.objective_value)) if obj_expr is not None else 0
+
     return ScheduleResponse(
         status=status_name,
         feasible=True,
@@ -591,5 +689,6 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         schedules=schedules,
         unmet_preferences=unmet_pref,
         unmet_wanted_off=unmet_woff,
+        objective_value=obj_val,
         message="근무표 생성 완료" + (" (최적해)" if status == cp_model.OPTIMAL else ""),
     )

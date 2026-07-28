@@ -210,9 +210,10 @@ class ScheduleRequest(BaseModel):
         True, description="T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측 하드)"
     )
     exclusive_team_wanted_off: bool = Field(
-        True,
-        description="E4: 같은 팀 내 원티드 오프가 같은 날 겹치지 않도록 하드 제약 "
-        "(팀당 하루 승인 오프 ≤ 1). 신청 단계 검증과 병행.",
+        False,
+        description="E4: 같은 팀 내 원티드 오프 겹침을 '하드'로 금지할지. 실데이터 검증 결과 "
+        "실제로는 원티드를 우선해 겹침을 허용(연차 등으로 커버)하므로 기본은 소프트(아래 "
+        "weight_team_off_overlap). True로 두면 하드 금지(팀당 하루 승인 오프 ≤ 1).",
     )
     exclude_trainee_from_staffing: bool = Field(
         True,
@@ -235,7 +236,7 @@ class ScheduleRequest(BaseModel):
     # 목적 함수 가중치 (클수록 우선순위 높음)
     weight_preference: int = Field(10, ge=0, description="개인 희망 미반영 페널티")
     weight_fairness: int = Field(3, ge=0, description="근무 배분 불공정 페널티")
-    weight_wanted_off: int = Field(50, ge=0, description="원티드 오프 미반영 페널티(최우선)")
+    weight_wanted_off: int = Field(200, ge=0, description="원티드 오프 미반영 페널티(절대 최우선 — 부서원 만족 1순위)")
     weight_wanted_work: int = Field(5, ge=0, description="원티드 D/E/N 미반영 페널티(낮음)")
     weight_target_staff: int = Field(4, ge=0, description="적정 인원 부족 페널티 (INRC S1)")
     weight_isolated_work: int = Field(6, ge=0, description="T6b: OFF-근무-OFF 고립근무 페널티")
@@ -247,8 +248,30 @@ class ScheduleRequest(BaseModel):
     weight_off_count: int = Field(40, ge=0, description="E1: 월 오프 수가 목표(주말+공휴일)와 어긋난 만큼 페널티")
     weight_seniority_mix: int = Field(5, ge=0, description="F1: 한 교대가 저연차만/고연차만으로 채워질 때 페널티")
     weight_night_keep: int = Field(6, ge=0, description="C3: 나이트 블록(≥2) 직후 오프가 2개 미만이면 페널티")
+    weight_team_off_overlap: int = Field(8, ge=0, description="E4(소프트): 같은 팀 원티드 오프가 같은 날 겹치면 페널티(원티드 우선)")
+    weight_long_block: int = Field(6, ge=0, description="근무 텀 5일 연속(최대치) 지양 — 3~4일 텀 선호(웹리서치)")
+    weight_weekend_fair: int = Field(4, ge=0, description="주말 오프를 사람마다 고르게 — 주말오프 편차 페널티(웹리서치)")
 
     time_limit_seconds: float = Field(15.0, gt=0, le=120)
+
+    # ---- 다양화·수렴 실험용 (기본값이면 동작에 영향 없음) ----
+    random_seed: int | None = Field(None, description="CP-SAT 랜덤 시드 (동일 시드=재현). 지정 시 탐색 무작위화")
+    forbidden_solutions: list[dict[str, list[str]]] = Field(
+        default_factory=list,
+        description="이전에 나온 해(간호사 id→교대 나열)를 no-good으로 금지 → 서로 다른 해 열거용",
+    )
+    objective_max: int | None = Field(
+        None, ge=0, description="목적함수 상한. 최적값 O*로 고정해 '동일 품질의 다른 해'만 탐색"
+    )
+    deterministic_tiebreak: bool = Field(
+        False,
+        description="동일 품질 해가 여럿일 때 결정적 타이브레이커로 유일해 수렴(사전식). "
+        "인위적 규칙이므로 기본 꺼짐, 수렴/재현이 필요할 때만 켠다.",
+    )
+    primary_max: int | None = Field(
+        None, ge=0, description="1차 목적(소프트 합) 상한(하드). 2단계 사전식 풀이용 — "
+        "먼저 구한 최적 품질값으로 고정하고 타이브레이커만 최소화할 때 사용",
+    )
 
     # ---- 검증 ----
     @field_validator("nurses")
@@ -367,4 +390,5 @@ class ScheduleResponse(BaseModel):
     schedules: list[NurseSchedule]
     unmet_preferences: int
     unmet_wanted_off: int = 0
+    objective_value: int | None = None
     message: str = ""
