@@ -632,7 +632,7 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     # ---- 풀기 ----
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = req.time_limit_seconds
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = req.num_workers
     if req.random_seed is not None:
         solver.parameters.random_seed = req.random_seed
         solver.parameters.randomize_search = True

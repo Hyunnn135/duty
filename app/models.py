@@ -272,6 +272,7 @@ class ScheduleRequest(BaseModel):
         None, ge=0, description="1차 목적(소프트 합) 상한(하드). 2단계 사전식 풀이용 — "
         "먼저 구한 최적 품질값으로 고정하고 타이브레이커만 최소화할 때 사용",
     )
+    num_workers: int = Field(8, ge=1, le=32, description="CP-SAT 병렬 워커 수. 1로 두면 결정적(재현 가능) 탐색")
 
     # ---- 검증 ----
     @field_validator("nurses")

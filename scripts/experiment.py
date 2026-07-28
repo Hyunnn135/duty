@@ -248,9 +248,37 @@ def print_round(k=5, tl=10, **cfg):
     return grids, unique
 
 
+def definitive(tl=30):
+    """결정적 모드: num_workers=1 + 고정 시드 → 재현 가능한 단일 근무표.
+    (사전식 타이브레이커는 22×31 규모에서 계산적으로 풀리지 않아 불채택 — 보고서 §6.)
+    두 번 풀어 완전히 동일한지(=어떤 실행이든 같은 결과) 확인한다."""
+    def run():
+        return solve(build_request(time_limit_seconds=tl, deterministic_tiebreak=False,
+                                   num_workers=1, random_seed=0))
+    r1 = run()
+    r2 = run()
+    g1, g2 = grid_of(r1), grid_of(r2)
+    if not g1:
+        print(f"해 없음 status={r1.status}"); return False, {}
+    identical = g1 == g2
+    print(f"결정적 2회 실행 동일?: {identical}  (status={r1.status}, obj={r1.objective_value})")
+    m = metrics(g1); rm = metrics(real_grid())
+    print("\n지표(결정적 단일해 vs 실제):")
+    for c in ["hard", "wanted_pct", "night_spread", "night_std", "off_off_target",
+              "blocks_len>=5", "blocks_3or4", "EOD", "isolated_work", "soft_transition",
+              "weekend_off_spread", "team_cover_miss"]:
+        print(f"  {c:22} 결정해={m[c]:>6}   실제={rm[c]}")
+    print("유사도(실제와 일치율):", similarity(g1))
+    return identical, g1
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--tl", type=float, default=10)
+    ap.add_argument("--mode", choices=["round", "converge"], default="round")
     a = ap.parse_args()
-    print_round(k=a.k, tl=a.tl)
+    if a.mode == "converge":
+        definitive(tl=a.tl)
+    else:
+        print_round(k=a.k, tl=a.tl)
