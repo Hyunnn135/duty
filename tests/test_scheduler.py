@@ -355,6 +355,7 @@ def test_team_wanted_off_no_overlap():
     # 팀1의 n0, n1이 같은 날(3일) 오프 신청 → 하나만 승인 가능
     req = ScheduleRequest(
         num_days=7, nurses=nurses, min_staff=MinStaff(D=1, E=1, N=1),
+        exclusive_team_wanted_off=True,  # 하드 E4 옵트인 (기본은 소프트로 변경됨)
         wanted=[
             WantedRequest(nurse_id="n0", start_day=3, shift=Shift.OFF),
             WantedRequest(nurse_id="n1", start_day=3, shift=Shift.OFF),
