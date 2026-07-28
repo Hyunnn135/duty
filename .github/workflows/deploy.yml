@@ -1,0 +1,60 @@
+name: Deploy to Cloud Run
+
+# main 브랜치 병합 시 자동 배포 + 수동 실행(workflow_dispatch) 지원.
+# 필요한 GitHub 설정은 docs/DEPLOY.md 참고.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Workload Identity Federation(키리스 인증)에 필요.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 테스트가 통과해야 배포 (안전장치)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+      # GCP 인증 (서비스 계정 키 없이 WIF 사용)
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Dockerfile로 컨테이너 빌드(Cloud Build) 후 Cloud Run 배포.
+      # SQLite 영속화를 위해 GCS 버킷을 /data 볼륨으로 마운트하고 단일 인스턴스로 고정.
+      - name: Deploy
+        run: |
+          gcloud run deploy "${{ vars.SERVICE_NAME }}" \
+            --source . \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --allow-unauthenticated \
+            --execution-environment gen2 \
+            --cpu 2 --memory 1Gi --concurrency 8 --timeout 120 \
+            --min-instances 1 --max-instances 1 \
+            --set-env-vars DUTY_DB=/data/duty.db \
+            --set-secrets DUTY_SECRET=duty-secret:latest \
+            --add-volume name=data,type=cloud-storage,bucket=${{ vars.DATA_BUCKET }} \
+            --add-volume-mount volume=data,mount-path=/data
+
+      - name: Show service URL
+        run: |
+          gcloud run services describe "${{ vars.SERVICE_NAME }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format='value(status.url)'

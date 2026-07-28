@@ -1,0 +1,16 @@
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+tests
+docs
+data
+*.db
+.venv
+venv
+env
+scratchpad
+*.md
+requirements-dev.txt
