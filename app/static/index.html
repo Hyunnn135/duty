@@ -662,12 +662,53 @@ function showWarnings(data){
     `<div class="status warn">⚠️ ${esc(data.message)}</div>
      <div class="scroll" style="margin-bottom:10px"><table class="rtable"><thead><tr><th>원칙</th><th>규칙</th><th>간호사</th><th>날짜</th><th>내용</th></tr></thead><tbody>${rows}</tbody></table></div>
      <div class="row"><button class="sm ghost" onclick="warnPanel.innerHTML=''">위배 감수하고 진행</button>
-       <button class="sm" onclick="regenAlternative()">대안 다시 생성</button>
-       <span class="muted">※ 대원칙 위반은 무시하고 확정할 수 있습니다 (PLAN 0.2).</span></div>`;
+       ${isAdmin()?`<button class="sm" onclick="showAlternatives()">🔧 대안 3안 보기</button>`:""}
+       <span class="muted">※ 대원칙 위반은 무시하고 확정하거나, 대안 3안 중 하나를 골라 수정할 수 있습니다 (PLAN 0.2).</span></div>
+     <div id="altBox" style="margin-top:12px"></div>`;
 }
-async function regenAlternative(){
-  if (!isAdmin()){ alert("대안 생성은 관리자·마스터만 가능합니다."); return; }
-  switchTab("setup"); await generate();
+// 현재 그리드로 대안 3안 요청 (관리자·마스터)
+let ALTS=[];
+function nightIneligibleNames(){
+  const names=(roster||[]).filter(r=>r.night===false && r.name.trim()).map(r=>r.name.trim());
+  return names;
+}
+async function showAlternatives(){
+  if (!isAdmin() || !SCHED) return;
+  const altBox=document.getElementById("altBox"); altBox.innerHTML='<span class="muted">⏳ 대안을 계산하고 있습니다...</span>';
+  // 그리드(이름→라벨) + 이월(이름 키) 구성
+  const schedules={}; for (const s of SCHED.schedules) schedules[s.name]=(s.labels||s.shifts);
+  const carry=SCHED.carry_over||{}; const carryByName={};
+  if (SCHED.nurseIds){ const id2name=Object.fromEntries(Object.entries(SCHED.nurseIds).map(([n,i])=>[i,n])); for(const[id,seq]of Object.entries(carry)) carryByName[id2name[id]||id]=seq; }
+  const minEl=id=>{const e=document.getElementById(id);return e?+e.value:0;};
+  const body={ schedules, carry_over: carryByName, num_days: SCHED.num_days,
+    max_consecutive_days: SCHED_maxCons(), max_consecutive_nights: SCHED_maxNight(),
+    min_staff: { D:minEl("minD"), E:minEl("minE"), N:minEl("minN"), M:0 },
+    night_ineligible: nightIneligibleNames(), count: 3 };
+  try {
+    const data=await api("POST","/api/alternatives",body);
+    ALTS=data.alternatives||[];
+    if (!data.ok || !ALTS.length){ altBox.innerHTML=`<div class="status err">${esc(data.message||"대안을 찾지 못했습니다.")}</div>`; return; }
+    let html=`<div class="muted" style="margin-bottom:6px">${esc(data.message)}</div>`;
+    ALTS.forEach((a,i)=>{
+      const chg=a.changes.slice(0,8).map(c=>`${esc(c.nurse)} ${c.day}일 <b>${esc(c.frm)}→${esc(c.to)}</b>`).join(", ");
+      const more=a.changes.length>8?` 외 ${a.changes.length-8}건`:"";
+      html+=`<div class="card" style="padding:12px;margin:0 0 8px">
+        <div class="row"><strong>대안 ${i+1}</strong> <span class="pill">${a.changed}칸 변경</span>
+        <span style="margin-left:auto"></span><button class="sm" onclick="applyAlternative(${i})">이 대안 적용</button></div>
+        <div class="muted" style="margin-top:6px;white-space:normal">${chg}${more||""}</div></div>`;
+    });
+    altBox.innerHTML=html;
+  } catch(e){ altBox.innerHTML=`<div class="status err">대안 생성 실패: ${esc(e.message)}</div>`; }
+}
+function applyAlternative(i){
+  const a=ALTS[i]; if (!a) return;
+  for (const s of SCHED.schedules){
+    const row=a.grid[s.name]; if (!row) continue;
+    s.labels=row.slice(); s.shifts=row.map(normCell); recount(s);
+  }
+  store(); renderBoard();
+  warnPanel.innerHTML=`<div class="status ok">✅ 대안 ${i+1}을 적용했습니다. 검사로 확인하세요.</div>`;
+  validateEdits();
 }
 
 /* ============================ 통계 ============================ */
