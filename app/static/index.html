@@ -3,74 +3,98 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>간호사 근무표 자동 생성</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏥</text></svg>" />
+<title>듀티원 — 간호사 근무표 자동 생성</title>
 <style>
   :root {
-    --d: #2563eb; --e: #d97706; --n: #7c3aed; --o: #94a3b8;
-    --bg: #f8fafc; --card: #fff; --border: #e2e8f0; --text: #1e293b;
+    --d: #2563eb; --e: #d97706; --n: #7c3aed; --m: #0e8fa0; --o: #94a3b8;
+    --bg: #f1f5f9; --card: #fff; --border: #e2e8f0; --text: #1e293b;
+    --wkend: #fff7ed; --ok: #166534; --okbg: #dcfce7; --err: #991b1b; --errbg: #fee2e2;
+    --warn: #92400e; --warnbg: #fef3c7;
   }
   * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
   }
-  header { background: #0f172a; color: #fff; padding: 20px 24px; }
-  header h1 { margin: 0; font-size: 20px; }
-  header p { margin: 4px 0 0; color: #94a3b8; font-size: 13px; }
-  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
-  .card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-    padding: 20px; margin-bottom: 20px;
-  }
-  .card h2 { margin: 0 0 16px; font-size: 15px; }
-  .grid { display: grid; gap: 14px; }
-  .grid.cols { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+  header { background: #0f172a; color: #fff; padding: 16px 20px; display: flex; align-items: center; gap: 16px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 3px 0 0; color: #94a3b8; font-size: 12px; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
+  .card > h2 { margin: 0 0 14px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .card > h2 .sub { font-weight: 400; font-size: 12px; color: #94a3b8; }
+  .grid { display: grid; gap: 12px; }
+  .grid.cols { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #475569; }
-  input, textarea, select {
-    width: 100%; padding: 8px 10px; border: 1px solid var(--border);
-    border-radius: 8px; font-size: 14px; font-family: inherit;
-  }
-  textarea { resize: vertical; min-height: 70px; }
-  button {
-    background: var(--d); color: #fff; border: none; padding: 11px 22px;
-    border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
-  }
-  button:hover { background: #1d4ed8; }
-  button:disabled { opacity: .55; cursor: default; }
+  input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; background: #fff; }
+  textarea { resize: vertical; min-height: 60px; }
+  button { background: var(--d); color: #fff; border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: #fff; color: #334155; border: 1px solid var(--border); }
+  button.sm { padding: 6px 12px; font-size: 12.5px; }
+  button.danger { background: #ef4444; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: center; }
-  th { background: #f1f5f9; font-weight: 600; }
-  td.name { text-align: left; font-weight: 600; white-space: nowrap; }
-  .cell { font-weight: 700; border-radius: 4px; display: inline-block; width: 22px; }
-  .D { color: var(--d); } .E { color: var(--e); }
-  .N { color: var(--n); } .O { color: var(--o); }
-  .scroll { overflow-x: auto; }
-  .status { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-  .status.ok { background: #dcfce7; color: #166534; }
-  .status.err { background: #fee2e2; color: #991b1b; }
-  .legend { font-size: 12px; color: #64748b; margin-top: 12px; }
-  .legend b.D { color: var(--d); } .legend b.E { color: var(--e); }
-  .legend b.N { color: var(--n); } .legend b.O { color: var(--o); }
+  .status { padding: 11px 15px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
+  .status.ok { background: var(--okbg); color: var(--ok); }
+  .status.err { background: var(--errbg); color: var(--err); }
+  .status.warn { background: var(--warnbg); color: var(--warn); }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.sched { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+  table.sched th, table.sched td { border: 1px solid var(--border); padding: 3px 5px; text-align: center; min-width: 26px; }
+  table.sched th { background: #f8fafc; font-weight: 600; position: sticky; top: 0; }
+  table.sched td.name { text-align: left; font-weight: 600; position: sticky; left: 0; background: #fff; z-index: 1; min-width: 74px; }
+  table.sched th.name { position: sticky; left: 0; z-index: 2; }
+  table.sched td.wkend, table.sched th.wkend { background: var(--wkend); }
+  table.sched td.tot { background: #f8fafc; font-weight: 700; }
+  table.sched tr.teamsep td { border-top: 2px solid #cbd5e1; }
+  table.sched tr.totrow td { background: #f1f5f9; font-weight: 700; }
+  .cell { font-weight: 700; cursor: pointer; display: block; border-radius: 3px; user-select: none; }
+  .cell.D { color: var(--d); } .cell.E { color: var(--e); } .cell.N { color: var(--n); }
+  .cell.M { color: var(--m); } .cell.O { color: var(--o); } .cell.code { color: #be185d; font-size: 10px; }
+  .legend { font-size: 12px; color: #64748b; margin-top: 10px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .legend b { font-weight: 700; }
+  .legend b.D { color: var(--d); } .legend b.E { color: var(--e); } .legend b.N { color: var(--n); }
+  .legend b.M { color: var(--m); } .legend b.O { color: var(--o); }
+  .rtable { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .rtable th, .rtable td { border: 1px solid var(--border); padding: 4px 6px; }
+  .rtable th { background: #f8fafc; font-size: 12px; }
+  .rtable input, .rtable select { padding: 5px 6px; font-size: 12.5px; }
+  .rtable td.chk { text-align: center; }
+  .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #e0e7ff; color: #3730a3; font-weight: 600; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tabs button { background: #fff; color: #475569; border: 1px solid var(--border); }
+  .tabs button.active { background: var(--d); color: #fff; border-color: var(--d); }
+  .bars { display: grid; gap: 5px; margin-top: 8px; }
+  .barrow { display: grid; grid-template-columns: 46px 1fr 30px; align-items: center; gap: 8px; font-size: 12px; }
+  .bar { height: 16px; background: var(--n); border-radius: 3px; min-width: 2px; }
+  .muted { color: #94a3b8; font-size: 12.5px; }
+  a { color: var(--d); }
+  @media (max-width: 640px) {
+    .wrap { padding: 12px; }
+    header h1 { font-size: 16px; }
+    .card { padding: 14px; }
+  }
 </style>
 </head>
 <body>
-<header style="display:flex;align-items:center;gap:16px;">
+<header>
   <div style="flex:1">
-    <h1>🏥 간호사 근무표 자동 생성</h1>
-    <p>OR-Tools CP-SAT · 3교대+미드 제약조건 최적화</p>
+    <h1>🏥 듀티원 <span style="font-size:12px;font-weight:400;color:#64748b">(가칭)</span></h1>
+    <p>OR-Tools CP-SAT · 3교대+액팅 근무표 자동 생성</p>
   </div>
   <div id="userBox" style="display:none;text-align:right;font-size:13px;">
     <div id="userName" style="font-weight:700"></div>
-    <div id="userRole" style="color:#94a3b8;font-size:11px;margin:2px 0 6px"></div>
-    <button onclick="logout()" style="background:#334155;padding:5px 12px;font-size:12px;">로그아웃</button>
+    <div id="userRole" class="muted" style="margin:2px 0 6px"></div>
+    <button class="sm" onclick="logout()" style="background:#334155">로그아웃</button>
   </div>
 </header>
 
 <!-- 로그인/회원가입 오버레이 -->
-<div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;
-     display:flex;align-items:center;justify-content:center;padding:20px;">
-  <div class="card" style="width:100%;max-width:380px;background:#fff;">
+<div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;">
+  <div class="card" style="width:100%;max-width:380px;">
     <h2 id="authTitle" style="margin-top:0">로그인</h2>
     <div class="grid">
       <div><label>이메일</label><input type="email" id="authEmail" placeholder="you@hospital.kr"></div>
@@ -79,234 +103,502 @@
         <label>이름</label><input id="authName" placeholder="예: 김간호">
         <label style="margin-top:10px">병동</label><input id="authWard" placeholder="예: 61">
       </div>
-      <div id="authErr" style="display:none;color:#991b1b;font-size:13px;"></div>
+      <div id="authErr" style="display:none;color:var(--err);font-size:13px;"></div>
       <button id="authBtn" onclick="submitAuth()">로그인</button>
       <div style="font-size:12.5px;color:#64748b;text-align:center;">
         <a href="#" id="authToggle" onclick="toggleAuthMode();return false;">처음이신가요? 회원가입</a>
       </div>
-      <div style="font-size:11px;color:#94a3b8;">💡 최초 가입자는 자동으로 마스터 권한을 받습니다.
-        근무표 생성은 관리자(파트장)·마스터만 가능합니다.</div>
+      <div class="hint">💡 최초 가입자는 자동으로 마스터 권한을 받습니다. 근무표 생성은 관리자(파트장)·마스터만 가능합니다.</div>
     </div>
   </div>
 </div>
 
-<div class="wrap">
-  <div class="card">
-    <h2>기본 설정</h2>
-    <div class="grid cols">
-      <div>
-        <label>배정 일수</label>
-        <input type="number" id="numDays" value="14" min="1" max="62" />
+<div class="wrap" id="app" style="display:none">
+  <div class="tabs" id="tabs"></div>
+
+  <!-- ============ 설정 (admin/master) ============ -->
+  <section data-tab="setup">
+    <div class="card">
+      <h2>📅 편성 기간 & 인원 기준 <span class="sub">61병동 기본값 반영 (D/E/N=4=팀 3+액팅 1)</span></h2>
+      <div class="grid cols">
+        <div><label>연도</label><input type="number" id="year" value="2026" min="2024" max="2030"></div>
+        <div><label>월</label><input type="number" id="month" value="8" min="1" max="12"></div>
+        <div><label>Day 최소/적정</label><div class="row"><input type="number" id="minD" value="4" style="width:56px"><span>/</span><input type="number" id="tgtD" value="5" style="width:56px"></div></div>
+        <div><label>Evening 최소/적정</label><div class="row"><input type="number" id="minE" value="4" style="width:56px"><span>/</span><input type="number" id="tgtE" value="5" style="width:56px"></div></div>
+        <div><label>Night 최소/적정</label><div class="row"><input type="number" id="minN" value="4" style="width:56px"><span>/</span><input type="number" id="tgtN" value="4" style="width:56px"></div></div>
+        <div><label>팀당 교대 최소</label><input type="number" id="teamMin" value="1" min="0"></div>
+        <div><label>월 나이트 상한</label><input type="number" id="maxNights" value="7" min="0"></div>
+        <div><label>연속 근무 최대</label><input type="number" id="maxCons" value="5" min="1"></div>
+        <div><label>연속 나이트 최대</label><input type="number" id="maxNight" value="3" min="1"></div>
+        <div><label>공휴일 (쉼표, 날짜)</label><input id="holidays" placeholder="예: 15"></div>
       </div>
-      <div>
-        <label>Day 최소 인원</label>
-        <input type="number" id="minD" value="2" min="0" />
+      <div class="hint">월 오프 수는 (토+일+공휴일) 수에 맞춰 자동 최적화됩니다 (대원칙 P7). 공휴일은 평일처럼 인원을 채웁니다(면담 E2).</div>
+    </div>
+
+    <div class="card">
+      <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 명단 순서 = 경력순</span>
+        <span style="margin-left:auto"><button class="sm ghost" onclick="addNurse()">+ 행 추가</button></span></h2>
+      <div class="scroll">
+        <table class="rtable" id="rosterTable">
+          <thead><tr>
+            <th style="min-width:110px">이름</th><th>팀</th><th title="1=최고참">경력순위</th>
+            <th title="임신·산후 시 해제">나이트</th><th title="입사 첫 달 교육">트레이닝</th>
+            <th>교육자</th><th></th>
+          </tr></thead>
+          <tbody id="rosterBody"></tbody>
+        </table>
       </div>
-      <div>
-        <label>Evening 최소 인원</label>
-        <input type="number" id="minE" value="2" min="0" />
-      </div>
-      <div>
-        <label>Night 최소 인원</label>
-        <input type="number" id="minN" value="1" min="0" />
-      </div>
-      <div>
-        <label>연속 근무 최대일</label>
-        <input type="number" id="maxCons" value="5" min="1" />
-      </div>
-      <div>
-        <label>연속 나이트 최대일</label>
-        <input type="number" id="maxNight" value="3" min="1" />
-      </div>
-      <div>
-        <label>간호사별 최소 오프</label>
-        <input type="number" id="minOff" value="4" min="0" />
+      <div class="hint">트레이닝 중인 신규는 정원(4/4/4)에서 제외되고 교육자와 항상 같은 근무에 배정됩니다 (면담 F2).</div>
+    </div>
+
+    <div class="card">
+      <h2>📝 원티드 · 사전배정 · 전월 이월 <span class="sub">선택</span></h2>
+      <div class="grid" style="grid-template-columns:1fr;gap:16px">
+        <div>
+          <label>원티드 신청 — <code>이름, 시작일, 종료일, 종류(O/D/E/N)</code> (한 줄에 하나)</label>
+          <textarea id="wanted" placeholder="예)
+김민지, 3, 5, O
+이서준, 10, 10, N"></textarea>
+          <div class="hint">오프(O)는 최우선 반영. 같은 팀 내 오프는 같은 날 겹칠 수 없습니다(대원칙 P6). 연속 최대 3일.</div>
+        </div>
+        <div>
+          <label>사전 확정 휴무(연차 등) — <code>이름, 날짜, 코드(HY/공가/병가/Edu/경조/PH/AH)</code></label>
+          <textarea id="preassigned" placeholder="예)
+박지우, 7, HY"></textarea>
+        </div>
+        <div>
+          <label>전월 말일 이월 — <code>이름, 근무나열(오래된→마지막)</code></label>
+          <textarea id="carry" placeholder="예)
+정하은, N,N,O"></textarea>
+          <div class="hint">전월 마지막 며칠(최소 7일 권장, 면담 H1)의 근무를 넣으면 월초 연속·회전 규칙에 반영됩니다.</div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>간호사 명단</h2>
-    <label>한 줄에 한 명씩 이름을 입력하세요.</label>
-    <textarea id="nurses">김민지
-이서준
-박지우
-최유나
-정하은
-강도윤
-윤지호
-임채원</textarea>
-  </div>
+    <div class="row" style="margin-bottom:8px">
+      <button id="genBtn" onclick="generate()">근무표 생성</button>
+      <span id="genState" class="muted"></span>
+    </div>
+  </section>
 
-  <div class="card">
-    <h2>개인 희망 / 연차 (선택)</h2>
-    <label>한 줄에 하나씩. 형식: <code>이름, 날짜(1부터), 교대(D/E/N/O), 종류(prefer/forbid)</code></label>
-    <textarea id="requests" placeholder="예)
-김민지, 3, O, prefer
-이서준, 5, N, forbid"></textarea>
-    <div class="hint">prefer = 되도록 반영, forbid = 반드시 배정 금지(예: 승인된 연차는 그날 근무 forbid)</div>
-  </div>
+  <!-- ============ 근무표 ============ -->
+  <section data-tab="board">
+    <div id="boardEmpty" class="card"><span class="muted">아직 생성된 근무표가 없습니다. “설정” 탭에서 근무표를 생성하세요.</span></div>
+    <div id="board" style="display:none">
+      <div id="boardStatus"></div>
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <strong id="boardTitle" style="font-size:15px"></strong>
+          <span style="margin-left:auto"></span>
+          <label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:500;font-size:12.5px">
+            <input type="checkbox" id="onlyMine" style="width:auto" onchange="renderBoard()"> 내 근무만</label>
+          <button class="sm ghost" onclick="validateEdits()">🛡 대원칙 검사</button>
+          <button class="sm ghost" onclick="exportCSV()">⬇ CSV(엑셀)</button>
+          <button class="sm ghost" onclick="exportPNG()">🖼 이미지</button>
+        </div>
+        <div id="warnPanel"></div>
+        <div class="scroll"><table class="sched" id="schedTable"></table></div>
+        <div class="legend">
+          <span><b class="D">D</b> 데이</span><span><b class="E">E</b> 이브닝</span>
+          <span><b class="N">N</b> 나이트</span><span><b class="M">M</b> 액팅(미드)</span>
+          <span><b class="O">O</b> 오프</span><span class="muted">셀 클릭 → D·E·N·M·O 순환(수동 수정)</span>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <button id="genBtn" onclick="generate()">근무표 생성</button>
+  <!-- ============ 통계 ============ -->
+  <section data-tab="stats">
+    <div id="statsEmpty" class="card"><span class="muted">근무표를 생성하면 통계가 표시됩니다.</span></div>
+    <div id="statsBody" style="display:none"></div>
+  </section>
 
-  <div id="result" style="margin-top: 24px;"></div>
+  <!-- ============ 원티드(부서원) ============ -->
+  <section data-tab="request">
+    <div class="card">
+      <h2>🙋 나의 원티드 신청</h2>
+      <div class="grid cols">
+        <div><label>시작일</label><input type="number" id="reqStart" min="1" max="31"></div>
+        <div><label>종료일</label><input type="number" id="reqEnd" min="1" max="31"></div>
+        <div><label>종류</label><select id="reqShift"><option value="O">오프</option><option value="D">데이</option><option value="E">이브닝</option><option value="N">나이트</option></select></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="sm" onclick="addMyWanted()">신청 추가</button></div>
+      <div id="myWanted" style="margin-top:14px"></div>
+      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. · 신청 기한이 만료되면 부서장에게 직접 문의하세요.</div>
+      <div class="hint">※ 서버 제출·부서장 승인 연동은 준비 중(Phase 5)입니다. 현재는 부서장이 생성 시 신청 내용을 반영합니다.</div>
+    </div>
+  </section>
 </div>
 
 <script>
-/* ---- 인증 ---- */
-let regMode = false;
+/* ============================ 인증 ============================ */
+let regMode = false, ME = null;
+const ROLE_KO = { master: "마스터", admin: "관리자(파트장)", staff: "일반(부서원)" };
 function token() { return localStorage.getItem("duty_token") || ""; }
 function authHeaders() { return token() ? { "Authorization": "Bearer " + token() } : {}; }
-function showAuth(show) { document.getElementById("authOverlay").style.display = show ? "flex" : "none"; }
+function showAuth(s) { document.getElementById("authOverlay").style.display = s ? "flex" : "none"; }
 function toggleAuthMode() {
   regMode = !regMode;
-  document.getElementById("authTitle").textContent = regMode ? "회원가입" : "로그인";
-  document.getElementById("authBtn").textContent = regMode ? "가입하기" : "로그인";
-  document.getElementById("regFields").style.display = regMode ? "block" : "none";
-  document.getElementById("authToggle").textContent =
-    regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
+  authTitle.textContent = regMode ? "회원가입" : "로그인";
+  authBtn.textContent = regMode ? "가입하기" : "로그인";
+  regFields.style.display = regMode ? "block" : "none";
+  authToggle.textContent = regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
 }
-function authError(msg) {
-  const el = document.getElementById("authErr");
-  el.textContent = msg; el.style.display = "block";
-}
+function authError(m) { authErr.textContent = m; authErr.style.display = "block"; }
 async function submitAuth() {
-  const email = document.getElementById("authEmail").value.trim();
-  const pw = document.getElementById("authPw").value;
+  const email = authEmail.value.trim(), pw = authPw.value;
   const url = regMode ? "/api/auth/register" : "/api/auth/login";
   const body = regMode
-    ? { email, password: pw, name: document.getElementById("authName").value.trim() || "사용자",
-        ward: document.getElementById("authWard").value.trim() }
+    ? { email, password: pw, name: authName.value.trim() || "사용자", ward: authWard.value.trim() }
     : { email, password: pw };
   try {
-    const res = await fetch(url, { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok) { authError(data.detail || "실패했습니다"); return; }
     localStorage.setItem("duty_token", data.token);
-    applyUser(data.name, data.role);
-    showAuth(false);
+    ME = { name: data.name, role: data.role, ward: data.ward };
+    onAuthed();
   } catch (e) { authError("서버에 연결할 수 없습니다"); }
 }
-const ROLE_KO = { master: "마스터", admin: "관리자(파트장)", staff: "일반(부서원)" };
-function applyUser(name, role) {
-  document.getElementById("userBox").style.display = "block";
-  document.getElementById("userName").textContent = name;
-  document.getElementById("userRole").textContent = ROLE_KO[role] || role;
-  const canGen = role === "admin" || role === "master";
-  document.getElementById("genBtn").disabled = !canGen;
-  document.getElementById("genBtn").title = canGen ? "" : "근무표 생성은 관리자·마스터 전용입니다";
-}
-function logout() {
-  localStorage.removeItem("duty_token");
-  location.reload();
-}
+function logout() { localStorage.removeItem("duty_token"); location.reload(); }
 async function initAuth() {
   if (!token()) { showAuth(true); return; }
   const res = await fetch("/api/auth/me", { headers: authHeaders() });
   if (!res.ok) { localStorage.removeItem("duty_token"); showAuth(true); return; }
-  const me = await res.json();
-  applyUser(me.name, me.role);
+  ME = await res.json();
+  onAuthed();
 }
-initAuth();
+function isAdmin() { return ME && (ME.role === "admin" || ME.role === "master"); }
 
-const SHIFTS = ["D", "E", "N", "O"];
-
-function parseNurses() {
-  return document.getElementById("nurses").value
-    .split("\n").map(s => s.trim()).filter(Boolean)
-    .map((name, i) => ({ id: "n" + i, name }));
+function onAuthed() {
+  showAuth(false);
+  document.getElementById("app").style.display = "block";
+  userBox.style.display = "block";
+  userName.textContent = ME.name;
+  userRole.textContent = ROLE_KO[ME.role] || ME.role;
+  buildTabs();
+  if (isAdmin() && roster.length === 0) seedRoster();
+  renderRoster();
+  loadStored();
 }
 
-function parseRequests(nurses) {
+/* ============================ 탭 ============================ */
+const TABS_ADMIN = [["setup","⚙️ 설정"],["board","📋 근무표"],["stats","📊 통계"]];
+const TABS_STAFF = [["board","📋 근무표"],["request","🙋 원티드 신청"],["stats","📊 내 통계"]];
+let curTab = null;
+function buildTabs() {
+  const defs = isAdmin() ? TABS_ADMIN : TABS_STAFF;
+  tabs.innerHTML = "";
+  defs.forEach(([k, label]) => {
+    const b = document.createElement("button");
+    b.textContent = label; b.onclick = () => switchTab(k);
+    b.dataset.k = k; tabs.appendChild(b);
+  });
+  switchTab(defs[0][0]);
+}
+function switchTab(k) {
+  curTab = k;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.k === k));
+  document.querySelectorAll("section[data-tab]").forEach(s => s.style.display = s.dataset.tab === k ? "block" : "none");
+  if (k === "stats") renderStats();
+  if (k === "request") renderMyWanted();
+}
+
+/* ============================ 명단(로스터) ============================ */
+let roster = []; // {name, team, rank, night, trainee, trainer}
+function seedRoster() {
+  // 3팀 × 8명 = 24명 (경력순위 1=최고참). D/E/N=4명 정원을 충족할 실규모 예시.
+  const names = [
+    ["장현진",1],["김도연",1],["이수민",1],["박서윤",1],["한지민",1],["오세영",1],["문가은",1],["백주원",1],
+    ["안현영",2],["최민수",2],["정예은",2],["신다혜",2],["강하늘",2],["류지원",2],["조은비",2],["윤채아",2],
+    ["신유진",3],["윤지호",3],["임채원",3],["권나래",3],["황도현",3],["서예린",3],["남태희",3],["고은솔",3],
+  ];
+  roster = names.map(([name, team], i) => ({
+    name, team, rank: (i % 8) + 1, night: true, trainee: false, trainer: "",
+  }));
+}
+function addNurse() { roster.push({ name: "", team: 1, rank: roster.length + 1, night: true, trainee: false, trainer: "" }); renderRoster(); }
+function renderRoster() {
+  const body = document.getElementById("rosterBody");
+  if (!body) return;
+  body.innerHTML = "";
+  roster.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    const others = roster.filter((_, j) => j !== i && roster[j].name).map(n => n.name);
+    tr.innerHTML =
+      `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
+      `<td><select onchange="setR(${i},'team',+this.value)">${[1,2,3].map(t=>`<option ${t===r.team?"selected":""}>${t}</option>`).join("")}</select></td>` +
+      `<td><input type="number" min="1" style="width:56px" value="${r.rank}" oninput="setR(${i},'rank',+this.value)"></td>` +
+      `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
+      `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
+      `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
+      `<td class="chk"><button class="sm danger" onclick="delNurse(${i})" title="삭제">×</button></td>`;
+    body.appendChild(tr);
+  });
+}
+function setR(i, k, v) { roster[i][k] = v; if (k === "name") renderRoster(); }
+function delNurse(i) { roster.splice(i, 1); renderRoster(); }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+/* ============================ 생성 ============================ */
+let SCHED = null; // {schedules:[{name,shifts,labels,counts}], num_days, year, month, ...}
+function nid(i) { return "n" + i; }
+function buildPayload() {
+  const nurses = roster.filter(r => r.name.trim()).map((r, i) => {
+    const o = { id: nid(i), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+      night_eligible: !!r.night, is_trainee: !!r.trainee };
+    if (r.trainee && r.trainer) o.trainer_id = null; // resolve below
+    return o;
+  });
   const byName = Object.fromEntries(nurses.map(n => [n.name, n.id]));
+  nurses.forEach((n, k) => { const r = roster.filter(x=>x.name.trim())[k]; if (r.trainee && r.trainer && byName[r.trainer]) n.trainer_id = byName[r.trainer]; });
+
+  const st = (min, tgt) => ({ min: +min, target: +tgt });
+  const mD=minD.value,tD=tgtD.value,mE=minE.value,tE=tgtE.value,mN=minN.value,tN=tgtN.value;
+  const weekday = { D: st(mD,tD), E: st(mE,tE), N: st(mN,tN), M: st(0,0) };
+  const weekend = { D: st(mD,mD), E: st(mE,mE), N: st(mN,mN), M: st(0,0) };
+  const staffing = { weekday, weekend, holiday: weekday };
+
+  const holidays = holidaysEl().split(",").map(s => parseInt(s.trim(),10)).filter(x => x>=1);
+  const wanted = parseWanted(byName), pre = parsePre(byName), carry = parseCarry(byName);
+
+  return {
+    year: +year.value, month: +month.value, nurses, staffing, holidays,
+    team_min_staff: +teamMin.value, max_nights_per_month: +maxNights.value || null,
+    max_consecutive_days: +maxCons.value, max_consecutive_nights: +maxNight.value,
+    wanted, pre_assigned: pre, carry_over: carry, time_limit_seconds: 20,
+  };
+}
+function holidaysEl(){ return document.getElementById("holidays").value; }
+function parseWanted(byName) {
   const out = [];
-  for (const line of document.getElementById("requests").value.split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    const parts = t.split(",").map(s => s.trim());
-    if (parts.length < 3) continue;
-    const [name, dayStr, shift, type] = parts;
-    if (!byName[name]) continue;
-    const day = parseInt(dayStr, 10) - 1; // 1-based -> 0-based
-    if (isNaN(day) || !SHIFTS.includes(shift)) continue;
-    out.push({
-      nurse_id: byName[name], day, shift,
-      type: (type === "forbid" ? "forbid" : "prefer"),
-    });
+  for (const line of document.getElementById("wanted").value.split("\n")) {
+    const p = line.split(",").map(s=>s.trim()); if (p.length<3||!byName[p[0]]) continue;
+    const s = parseInt(p[1],10)-1, e = parseInt(p[2],10)-1, sh = (p[3]||"O").toUpperCase();
+    if (isNaN(s)) continue;
+    out.push({ nurse_id: byName[p[0]], start_day: s, end_day: isNaN(e)?s:e, shift: ["D","E","N","O"].includes(sh)?sh:"O" });
   }
   return out;
 }
-
+function parsePre(byName) {
+  const out = [];
+  for (const line of document.getElementById("preassigned").value.split("\n")) {
+    const p = line.split(",").map(s=>s.trim()); if (p.length<3||!byName[p[0]]) continue;
+    const d = parseInt(p[1],10)-1; if (isNaN(d)) continue;
+    out.push({ nurse_id: byName[p[0]], day: d, code: p[2] });
+  }
+  return out;
+}
+function parseCarry(byName) {
+  const out = {};
+  for (const line of document.getElementById("carry").value.split("\n")) {
+    const idx = line.indexOf(","); if (idx<0) continue;
+    const name = line.slice(0,idx).trim(); const seq = line.slice(idx+1).split(",").map(s=>s.trim().toUpperCase()).filter(Boolean);
+    if (byName[name] && seq.length) out[byName[name]] = seq;
+  }
+  return out;
+}
 async function generate() {
-  const btn = document.getElementById("genBtn");
-  const result = document.getElementById("result");
-  const nurses = parseNurses();
-  if (nurses.length === 0) {
-    result.innerHTML = '<div class="status err">간호사를 한 명 이상 입력하세요.</div>';
-    return;
-  }
-  const payload = {
-    num_days: parseInt(document.getElementById("numDays").value, 10),
-    nurses,
-    min_staff: {
-      D: parseInt(document.getElementById("minD").value, 10),
-      E: parseInt(document.getElementById("minE").value, 10),
-      N: parseInt(document.getElementById("minN").value, 10),
-    },
-    max_consecutive_days: parseInt(document.getElementById("maxCons").value, 10),
-    max_consecutive_nights: parseInt(document.getElementById("maxNight").value, 10),
-    min_off_days: parseInt(document.getElementById("minOff").value, 10),
-    requests: parseRequests(nurses),
-  };
-
-  btn.disabled = true;
-  btn.textContent = "생성 중...";
-  result.innerHTML = '<div class="status">⏳ 최적 근무표를 계산하고 있습니다...</div>';
+  if (!isAdmin()) return;
+  const btn = genBtn; const payload = buildPayload();
+  if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
+  btn.disabled = true; btn.textContent = "생성 중..."; genState.textContent = "⏳ 최적 근무표 계산 중...";
   try {
-    const res = await fetch("/api/schedule", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify(payload),
-    });
+    const res = await fetch("/api/schedule", { method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(payload) });
     if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
-    if (res.status === 403) { throw new Error("근무표 생성 권한이 없습니다 (관리자·마스터 전용)"); }
+    if (res.status === 403) throw new Error("생성 권한이 없습니다 (관리자·마스터 전용)");
     const data = await res.json();
-    render(data, payload.num_days);
-  } catch (e) {
-    result.innerHTML = '<div class="status err">요청 실패: ' + e + '</div>';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "근무표 생성";
-  }
+    if (res.status === 422) throw new Error("입력값 오류: " + JSON.stringify(data.detail).slice(0,200));
+    SCHED = { ...data, year: payload.year, month: payload.month,
+      teams: Object.fromEntries(payload.nurses.map(n=>[n.name,n.team])),
+      carry_over: payload.carry_over, nurseIds: Object.fromEntries(payload.nurses.map(n=>[n.name,n.id])) };
+    store();
+    genState.textContent = data.feasible ? "✅ 완료" : "❌ 실패";
+    switchTab("board"); renderBoard();
+  } catch (e) { genState.textContent = "요청 실패: " + e.message; }
+  finally { btn.disabled = false; btn.textContent = "근무표 생성"; }
 }
 
-function render(data, numDays) {
-  const result = document.getElementById("result");
-  if (!data.feasible) {
-    result.innerHTML = '<div class="status err">❌ ' + (data.message || "생성 실패") + '</div>';
-    return;
-  }
-  let html = '<div class="status ok">✅ ' + data.message +
-    ' · 미반영 희망: ' + data.unmet_preferences + '건</div>';
-  html += '<div class="card scroll"><table><thead><tr><th>간호사</th>';
-  for (let d = 1; d <= numDays; d++) html += '<th>' + d + '</th>';
-  html += '<th>D</th><th>E</th><th>N</th><th>O</th></tr></thead><tbody>';
-  for (const sch of data.schedules) {
-    html += '<tr><td class="name">' + sch.name + '</td>';
-    for (const s of sch.shifts) {
-      const cls = s === "O" ? "O" : s;
-      html += '<td><span class="cell ' + cls + '">' + s + '</span></td>';
+/* ============================ 저장/복원(로컬) ============================ */
+function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED)); } catch (e) {} }
+function loadStored() { try { const s = localStorage.getItem("duty_sched"); if (s) { SCHED = JSON.parse(s); renderBoard(); } } catch (e) {} }
+
+/* ============================ 근무표 렌더 ============================ */
+const WD = ["월","화","수","목","금","토","일"];
+function isWeekend(y,m,day){ const w=new Date(y,m-1,day).getDay(); return w===0||w===6; }
+function firstWeekdayMon(y,m){ return (new Date(y,m-1,1).getDay()+6)%7; } // 0=월
+function renderBoard() {
+  const has = SCHED && SCHED.schedules && SCHED.schedules.length;
+  document.getElementById("boardEmpty").style.display = has ? "none" : "block";
+  document.getElementById("board").style.display = has ? "block" : "none";
+  if (!has) return;
+  const nd = SCHED.num_days, y = SCHED.year, m = SCHED.month;
+  boardTitle.textContent = (y&&m) ? `${y}년 ${m}월 근무표 (${nd}일)` : `근무표 (${nd}일)`;
+  const st = SCHED.feasible !== false;
+  boardStatus.innerHTML = st
+    ? `<div class="status ok">✅ ${esc(SCHED.message||"생성 완료")}${SCHED.unmet_wanted_off!=null?` · 미반영 원티드오프 ${SCHED.unmet_wanted_off}건`:""}</div>`
+    : `<div class="status err">❌ ${esc(SCHED.message||"생성 실패")}</div>`;
+
+  let rows = SCHED.schedules.map((s,i)=>({ ...s, team: SCHED.teams?.[s.name]||1, _i:i }));
+  if (document.getElementById("onlyMine").checked && ME) rows = rows.filter(r => r.name === ME.name);
+  rows.sort((a,b)=> a.team-b.team || a._i-b._i);
+
+  // header
+  let h = "<thead><tr><th class='name'>간호사</th>";
+  for (let d=1; d<=nd; d++){ const we = y&&m&&isWeekend(y,m,d); h += `<th class="${we?'wkend':''}">${d}</th>`; }
+  h += "<th>D</th><th>E</th><th>N</th><th>M</th><th>O</th></tr>";
+  if (y&&m){ h += "<tr><th class='name'></th>"; for(let d=1;d<=nd;d++){ const wd=WD[(firstWeekdayMon(y,m)+d-1)%7]; const we=isWeekend(y,m,d); h+=`<th class="${we?'wkend':''}" style="font-weight:400;color:#94a3b8">${wd}</th>`; } h+="<th></th><th></th><th></th><th></th><th></th></tr>"; }
+  h += "</thead>";
+
+  let b = "<tbody>";
+  let prevTeam = null;
+  for (const r of rows) {
+    const sep = prevTeam!==null && r.team!==prevTeam ? " teamsep" : ""; prevTeam = r.team;
+    b += `<tr class="${sep.trim()}"><td class="name">${esc(r.name)} <span class="pill">${r.team}팀</span></td>`;
+    for (let d=0; d<nd; d++){
+      const lab = (r.labels&&r.labels[d])||r.shifts[d];
+      const we = y&&m&&isWeekend(y,m,d+1);
+      b += `<td class="${we?'wkend':''}" data-n="${esc(r.name)}" data-d="${d}"><span class="cell ${cellCls(lab)}" onclick="cycleCell(this)">${esc(lab)}</span></td>`;
     }
-    html += '<td>' + sch.counts.D + '</td><td>' + sch.counts.E +
-      '</td><td>' + sch.counts.N + '</td><td>' + sch.counts.O + '</td>';
-    html += '</tr>';
+    const c=r.counts||{};
+    b += `<td class="tot">${c.D||0}</td><td class="tot">${c.E||0}</td><td class="tot">${c.N||0}</td><td class="tot">${c.M||0}</td><td class="tot">${c.O||0}</td></tr>`;
   }
-  html += '</tbody></table>';
-  html += '<div class="legend"><b class="D">D</b> 데이 · <b class="E">E</b> 이브닝 · ' +
-    '<b class="N">N</b> 나이트 · <b class="O">O</b> 오프</div></div>';
-  result.innerHTML = html;
+  // 교대별 일일 합계
+  const totLabels=[["D","D"],["E","E"],["N","N"],["M","M(액팅)"]];
+  for (const [k,lab] of totLabels){
+    b += `<tr class="totrow"><td class="name">Σ ${lab}</td>`;
+    for (let d=0; d<nd; d++){ let cnt=0; for (const s of SCHED.schedules){ const l=(s.labels&&s.labels[d])||s.shifts[d]; if (normCell(l)===k) cnt++; } b+=`<td>${cnt}</td>`; }
+    b += "<td></td><td></td><td></td><td></td><td></td></tr>";
+  }
+  b += "</tbody>";
+  document.getElementById("schedTable").innerHTML = h + b;
 }
+function cellCls(l){ const n=normCell(l); if(["D","E","N","M","O"].includes(l)) return l; if(l==="O")return"O"; if(["D","E","N","M"].includes(n)) return n+" code"; return "code"; }
+function normCell(l){ if(l==="M/D"||l==="M/E")return"M"; if(["D","E","N","M","O"].includes(l))return l; return "O"; }
+const CYCLE=["D","E","N","M","O"];
+function cycleCell(el){
+  if (!isAdmin()) return;
+  const cur = el.textContent.trim(); let i = CYCLE.indexOf(cur); const next = CYCLE[(i+1)%CYCLE.length];
+  el.textContent = next; el.className = "cell " + cellCls(next);
+  const td = el.closest("td"); const name = td.dataset.n, d = +td.dataset.d;
+  const s = SCHED.schedules.find(x=>x.name===name);
+  if (s){ s.shifts[d]=next; if(s.labels) s.labels[d]=next; recount(s); }
+  store();
+}
+function recount(s){ const c={D:0,E:0,N:0,M:0,O:0}; for(const l of (s.labels||s.shifts)){ const n=normCell(l); c[n]=(c[n]||0)+1; } s.counts=c; }
+
+/* ============================ 대원칙 검사 ============================ */
+async function validateEdits(){
+  if (!SCHED) return;
+  const schedules={}, carry=SCHED.carry_over||{};
+  const carryByName={};
+  if (SCHED.nurseIds){ const id2name=Object.fromEntries(Object.entries(SCHED.nurseIds).map(([n,i])=>[i,n])); for(const[id,seq]of Object.entries(carry)) carryByName[id2name[id]||id]=seq; }
+  for (const s of SCHED.schedules) schedules[s.name]=(s.labels||s.shifts);
+  const body={ schedules, carry_over: carryByName,
+    max_consecutive_days: SCHED_maxCons(), max_consecutive_nights: SCHED_maxNight() };
+  try {
+    const res=await fetch("/api/validate",{method:"POST",headers:{"Content-Type":"application/json",...authHeaders()},body:JSON.stringify(body)});
+    if (res.status===401){ showAuth(true); return; }
+    const data=await res.json(); showWarnings(data);
+  } catch(e){ warnPanel.innerHTML=`<div class="status err">검사 실패: ${esc(e.message)}</div>`; }
+}
+function SCHED_maxCons(){ const el=document.getElementById("maxCons"); return el?+el.value:5; }
+function SCHED_maxNight(){ const el=document.getElementById("maxNight"); return el?+el.value:3; }
+function showWarnings(data){
+  if (data.ok){ warnPanel.innerHTML=`<div class="status ok">🛡 ${esc(data.message)}</div>`; return; }
+  const rows=data.violations.map(v=>`<tr><td><span class="pill">${esc(v.principle)}</span></td><td>${esc(v.rule)}</td><td>${esc(v.nurse)}</td><td>${v.day}일</td><td class="muted">${esc(v.detail||"")}</td></tr>`).join("");
+  warnPanel.innerHTML=
+    `<div class="status warn">⚠️ ${esc(data.message)}</div>
+     <div class="scroll" style="margin-bottom:10px"><table class="rtable"><thead><tr><th>원칙</th><th>규칙</th><th>간호사</th><th>날짜</th><th>내용</th></tr></thead><tbody>${rows}</tbody></table></div>
+     <div class="row"><button class="sm ghost" onclick="warnPanel.innerHTML=''">위배 감수하고 진행</button>
+       <button class="sm" onclick="regenAlternative()">대안 다시 생성</button>
+       <span class="muted">※ 대원칙 위반은 무시하고 확정할 수 있습니다 (PLAN 0.2).</span></div>`;
+}
+async function regenAlternative(){
+  if (!isAdmin()){ alert("대안 생성은 관리자·마스터만 가능합니다."); return; }
+  switchTab("setup"); await generate();
+}
+
+/* ============================ 통계 ============================ */
+function renderStats(){
+  const has = SCHED && SCHED.schedules && SCHED.schedules.length;
+  document.getElementById("statsEmpty").style.display = has?"none":"block";
+  const body=document.getElementById("statsBody"); body.style.display = has?"block":"none";
+  if (!has) return;
+  let list = SCHED.schedules.slice();
+  const staffOnly = !isAdmin();
+  if (staffOnly && ME) list = list.filter(s=>s.name===ME.name);
+
+  // 개인별 카운트 표
+  let rows = list.map(s=>{ const c=s.counts||{}; return `<tr><td class="name" style="text-align:left">${esc(s.name)}</td><td>${c.D||0}</td><td>${c.E||0}</td><td>${c.N||0}</td><td>${c.M||0}</td><td>${c.O||0}</td></tr>`; }).join("");
+  let html=`<div class="card"><h2>📊 개인별 근무 집계 ${staffOnly?'<span class="sub">본인 기준</span>':''}</h2>
+    <div class="scroll"><table class="rtable"><thead><tr><th>간호사</th><th>D</th><th>E</th><th>N</th><th>M</th><th>O</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+
+  // 나이트 분포 (관리자만, 전체)
+  if (!staffOnly){
+    const nights=SCHED.schedules.map(s=>(s.counts&&s.counts.N)||0);
+    const dist={}; nights.forEach(n=>dist[n]=(dist[n]||0)+1);
+    const keys=Object.keys(dist).map(Number).sort((a,b)=>a-b); const maxc=Math.max(...Object.values(dist),1);
+    const bars=keys.map(k=>`<div class="barrow"><span>N ${k}개</span><div class="bar" style="width:${dist[k]/maxc*100}%"></div><span>${dist[k]}명</span></div>`).join("");
+    const mn=Math.min(...nights), mx=Math.max(...nights);
+    html+=`<div class="card"><h2>🌙 나이트 배분 <span class="sub">편차 ${mx-mn} (min ${mn} · max ${mx})</span></h2><div class="bars">${bars}</div></div>`;
+  } else {
+    const me=list[0]; if (me){ const c=me.counts||{}; const tot=(c.D||0)+(c.E||0)+(c.N||0)+(c.M||0);
+      html+=`<div class="card"><h2>🌙 나의 요약</h2><div class="muted">총 근무 ${tot}일 · 오프 ${c.O||0}일 · 나이트 ${c.N||0}개</div></div>`; }
+  }
+  body.innerHTML=html;
+}
+
+/* ============================ 원티드(부서원) ============================ */
+let myWanted=[];
+function addMyWanted(){
+  const s=+reqStart.value, e=+reqEnd.value||s, sh=reqShift.value;
+  if (!s){ return; }
+  myWanted.push({ start:s, end:Math.max(s,e), shift:sh }); renderMyWanted();
+}
+function renderMyWanted(){
+  const el=document.getElementById("myWanted"); if(!el) return;
+  if (!myWanted.length){ el.innerHTML='<span class="muted">아직 신청이 없습니다.</span>'; return; }
+  const SH={O:"오프",D:"데이",E:"이브닝",N:"나이트"};
+  el.innerHTML='<table class="rtable"><thead><tr><th>기간</th><th>종류</th><th></th></tr></thead><tbody>'+
+    myWanted.map((w,i)=>`<tr><td>${w.start}일${w.end!==w.start?`~${w.end}일`:""}</td><td>${SH[w.shift]}</td><td class="chk"><button class="sm danger" onclick="myWanted.splice(${i},1);renderMyWanted()">×</button></td></tr>`).join("")+
+    '</tbody></table>';
+}
+
+/* ============================ 내보내기 ============================ */
+function exportCSV(){
+  if (!SCHED) return;
+  const nd=SCHED.num_days; let lines=[];
+  let head=["간호사","팀"]; for(let d=1;d<=nd;d++)head.push(d); head.push("D","E","N","M","O");
+  lines.push(head.join(","));
+  for (const s of SCHED.schedules){ const c=s.counts||{}; const team=SCHED.teams?.[s.name]||"";
+    lines.push([s.name,team,...(s.labels||s.shifts),c.D||0,c.E||0,c.N||0,c.M||0,c.O||0].join(",")); }
+  const blob=new Blob(["﻿"+lines.join("\n")],{type:"text/csv;charset=utf-8"});
+  dl(blob, `duty_${SCHED.year||""}_${SCHED.month||""}.csv`);
+}
+function exportPNG(){
+  if (!SCHED) return;
+  const nd=SCHED.num_days, rows=SCHED.schedules;
+  const cw=24, nameW=90, rh=22, headH=24, sideW=0;
+  const W=nameW+cw*(nd+5)+10, H=headH+rh*rows.length+10;
+  const cv=document.createElement("canvas"); cv.width=W; cv.height=H;
+  const g=cv.getContext("2d"); g.fillStyle="#fff"; g.fillRect(0,0,W,H);
+  g.font="11px sans-serif"; g.textAlign="center"; g.textBaseline="middle";
+  const colX=i=>nameW+cw*i+cw/2;
+  g.fillStyle="#334155"; g.textAlign="left"; g.fillText("간호사",4,headH/2); g.textAlign="center";
+  for(let d=1;d<=nd;d++) g.fillText(d, colX(d-1), headH/2);
+  ["D","E","N","M","O"].forEach((k,j)=>g.fillText(k,colX(nd+j),headH/2));
+  const COLOR={D:"#2563eb",E:"#d97706",N:"#7c3aed",M:"#0e8fa0",O:"#94a3b8"};
+  rows.forEach((s,r)=>{ const y=headH+rh*r+rh/2;
+    g.fillStyle="#1e293b"; g.textAlign="left"; g.fillText(s.name.slice(0,6),4,y); g.textAlign="center";
+    for(let d=0;d<nd;d++){ const l=(s.labels&&s.labels[d])||s.shifts[d]; g.fillStyle=COLOR[normCell(l)]||"#be185d"; g.fillText(l,colX(d),y); }
+    const c=s.counts||{}; g.fillStyle="#334155"; [c.D,c.E,c.N,c.M,c.O].forEach((v,j)=>g.fillText(v||0,colX(nd+j),y)); });
+  cv.toBlob(b=>dl(b, `duty_${SCHED.year||""}_${SCHED.month||""}.png`));
+}
+function dl(blob, name){ const u=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1500); }
+
+initAuth();
 </script>
 </body>
 </html>
