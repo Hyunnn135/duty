@@ -148,6 +148,36 @@ Repository **variables**:
 | `SERVICE_NAME` | `duty` |
 | `DATA_BUCKET` | `${PROJECT_ID}-duty-data` |
 
+## 7.5 이메일 알림 (선택)
+
+피드백→마스터, 원티드 승인/반려→신청자, (옵트인) 근무표 발행→병동 구성원 메일 알림.
+SMTP 미설정 시 앱은 정상 동작하며 메일만 생략된다.
+
+```bash
+# 예: Gmail SMTP (2단계 인증 후 '앱 비밀번호' 발급 필요)
+printf '앱비밀번호16자리' | gcloud secrets create smtp-password --data-file=-
+gcloud secrets add-iam-policy-binding smtp-password \
+  --member="serviceAccount:${RUNTIME}" --role=roles/secretmanager.secretAccessor
+```
+
+| 환경 변수 | 의미 |
+|-----------|------|
+| `SMTP_HOST`/`SMTP_PORT` | SMTP 서버·포트(587 STARTTLS, 465 SSL) |
+| `SMTP_USER`/`SMTP_PASSWORD` | 로그인 계정·비밀번호(앱 비밀번호). PASSWORD는 Secret Manager |
+| `SMTP_FROM` | 발신자 주소(미지정 시 SMTP_USER) |
+| `NOTIFY_ON_PUBLISH` | `1`이면 발행 시 병동 구성원에게 메일(기본 꺼짐) |
+
+> 이 값들을 지정하지 않으면 이메일 기능은 자동 비활성(수신함만 동작).
+
+**GitHub Actions CD에 적용** (워크플로 수정 불필요): 배포 명령의 `--set-env-vars`·
+`--set-secrets`에 아래 저장소 **변수**가 그대로 이어붙는다. **각 값은 앞에 콤마로 시작**해야
+기존 값(`DUTY_DB`·`DUTY_SECRET`)과 병합된다. 비워두면 이메일 없이 배포된다.
+
+| 변수 | 값(예, 맨 앞 콤마 주의) |
+|------|------|
+| `EXTRA_ENV` | `,SMTP_HOST=smtp.gmail.com,SMTP_PORT=587,SMTP_USER=you@gmail.com,SMTP_FROM=you@gmail.com,NOTIFY_ON_PUBLISH=1` |
+| `EXTRA_SECRETS` | `,SMTP_PASSWORD=smtp-password:latest` |
+
 ## 8. 첫 배포
 
 - `main`에 병합하면 자동 실행되거나,

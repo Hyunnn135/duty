@@ -181,6 +181,46 @@ def test_request_window_open_allows(client):
 
 # ---- 피드백 ----
 
+def test_send_email_noop_when_unconfigured(monkeypatch):
+    import app.email_notify as en
+    for k in ("SMTP_HOST", "SMTP_FROM", "SMTP_USER"):
+        monkeypatch.delenv(k, raising=False)
+    assert en.is_configured() is False
+    assert en.send_email("a@b.c", "제목", "본문") is False  # 네트워크 접근 없이 즉시 False
+
+
+def test_feedback_emails_master(client, monkeypatch):
+    import app.email_notify as en
+    sent: list = []
+    monkeypatch.setattr(en, "send_email",
+                        lambda to, subject, body: sent.append((to, subject, body)) or True)
+    master = _reg(client, "boss@duty.kr", name="파트장")
+    staff = _reg(client, "kim@duty.kr", name="김간호", ward="61")
+    r = client.post("/api/feedback", json={"message": "야간 배분 개선 요청"}, headers=_h(staff["token"]))
+    assert r.status_code == 200
+    # 백그라운드 태스크가 마스터에게 메일 시도
+    assert len(sent) == 1
+    recipients, subject, body = sent[0]
+    assert "boss@duty.kr" in recipients
+    assert "김간호" in subject and "야간 배분" in body
+
+
+def test_wanted_decision_emails_requester(client, monkeypatch):
+    import app.email_notify as en
+    sent: list = []
+    monkeypatch.setattr(en, "send_email",
+                        lambda to, subject, body: sent.append((to, subject, body)) or True)
+    master = _reg(client, "boss@duty.kr", name="파트장")
+    staff = _reg(client, "kim@duty.kr", name="김간호", ward="61")
+    rid = client.post("/api/wanted",
+                      json={"year": 2026, "month": 8, "start_day": 3, "end_day": 4, "shift": "O"},
+                      headers=_h(staff["token"])).json()["id"]
+    sent.clear()
+    client.post(f"/api/wanted/{rid}/decision", json={"status": "approved"}, headers=_h(master["token"]))
+    assert len(sent) == 1 and "kim@duty.kr" in sent[0][0]
+    assert "승인" in sent[0][1]
+
+
 def test_feedback_to_master(client):
     master = _reg(client, "m@duty.kr")
     staff = _reg(client, "s@duty.kr", name="부서원")

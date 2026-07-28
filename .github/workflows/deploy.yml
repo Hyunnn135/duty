@@ -47,8 +47,8 @@ jobs:
             --execution-environment gen2 \
             --cpu 2 --memory 1Gi --concurrency 8 --timeout 120 \
             --min-instances 1 --max-instances 1 \
-            --set-env-vars DUTY_DB=/data/duty.db \
-            --set-secrets DUTY_SECRET=duty-secret:latest \
+            --set-env-vars "DUTY_DB=/data/duty.db${{ vars.EXTRA_ENV }}" \
+            --set-secrets "DUTY_SECRET=duty-secret:latest${{ vars.EXTRA_SECRETS }}" \
             --add-volume name=data,type=cloud-storage,bucket=${{ vars.DATA_BUCKET }} \
             --add-volume-mount volume=data,mount-path=/data
 
