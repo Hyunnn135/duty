@@ -393,3 +393,15 @@ def test_solve_candidates_distinct_equal_quality():
     grids = [tuple(tuple(s.shifts) for s in c.schedules) for c in cands]
     assert len(set(grids)) == len(grids)          # 서로 다른 배치
     assert len({c.objective_value for c in cands}) == 1  # 동일 품질(목적값)
+
+
+def test_exact_mode_night_band_fairness():
+    """exact_mode: 나이트 공정성을 하드 밴드로 → 밴드 폭 1, 편차 목적 없이도 균등."""
+    nurses = _nurses(12)
+    req = ScheduleRequest(num_days=14, nurses=nurses,
+                          min_staff=MinStaff(D=2, E=2, N=2),
+                          exact_mode=True, time_limit_seconds=15)
+    res = solve(req)
+    assert res.feasible
+    nights = [s.counts.get("N", 0) for s in res.schedules]
+    assert max(nights) - min(nights) <= 1   # 자동 밴드 [2,3] → 폭 1

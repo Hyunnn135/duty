@@ -182,6 +182,8 @@
     <div class="row" style="margin-bottom:8px">
       <button id="genBtn" onclick="generate()">근무표 생성</button>
       <button id="candBtn" class="ghost" onclick="generateCandidates()">🎲 여러 안 생성(3)</button>
+      <label style="display:flex;align-items:center;gap:5px;margin:0;font-weight:500;font-size:12.5px">
+        <input type="checkbox" id="exactMode" style="width:auto"> 🎯 정확 최적(느림·최고품질 보장)</label>
       <span id="genState" class="muted"></span>
     </div>
     <div id="candBox"></div>
@@ -470,7 +472,9 @@ function buildPayload() {
     year: +year.value, month: +month.value, nurses, staffing, holidays,
     team_min_staff: +teamMin.value, max_nights_per_month: +maxNights.value || null,
     max_consecutive_days: +maxCons.value, max_consecutive_nights: +maxNight.value,
-    wanted, pre_assigned: pre, carry_over: carry, time_limit_seconds: 20,
+    wanted, pre_assigned: pre, carry_over: carry,
+    exact_mode: !!(document.getElementById("exactMode") && document.getElementById("exactMode").checked),
+    time_limit_seconds: (document.getElementById("exactMode") && document.getElementById("exactMode").checked) ? 60 : 20,
   };
 }
 function holidaysEl(){ return document.getElementById("holidays").value; }
