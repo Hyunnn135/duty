@@ -137,7 +137,10 @@
 
     <div class="card">
       <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 명단 순서 = 경력순</span>
-        <span style="margin-left:auto"><button class="sm ghost" onclick="addNurse()">+ 행 추가</button></span></h2>
+        <span style="margin-left:auto;display:flex;gap:6px">
+          <button class="sm ghost" onclick="addNurse()">+ 행 추가</button>
+          <button class="sm" onclick="saveRoster()">💾 명단 저장</button></span></h2>
+      <div id="rosterMsg" class="hint" style="min-height:14px"></div>
       <div class="scroll">
         <table class="rtable" id="rosterTable">
           <thead><tr>
@@ -189,13 +192,16 @@
       <div class="card">
         <div class="row" style="margin-bottom:12px">
           <strong id="boardTitle" style="font-size:15px"></strong>
+          <select id="viewMonth" onchange="onViewMonth()" style="width:auto;display:none"></select>
           <span style="margin-left:auto"></span>
           <label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:500;font-size:12.5px">
             <input type="checkbox" id="onlyMine" style="width:auto" onchange="renderBoard()"> 내 근무만</label>
-          <button class="sm ghost" onclick="validateEdits()">🛡 대원칙 검사</button>
+          <button class="sm ghost" onclick="validateEdits()" data-admin>🛡 대원칙 검사</button>
+          <button class="sm" onclick="publishSchedule()" data-admin>📢 발행</button>
           <button class="sm ghost" onclick="exportCSV()">⬇ CSV(엑셀)</button>
           <button class="sm ghost" onclick="exportPNG()">🖼 이미지</button>
         </div>
+        <div id="pubMsg" class="hint" style="min-height:14px"></div>
         <div id="warnPanel"></div>
         <div class="scroll"><table class="sched" id="schedTable"></table></div>
         <div class="legend">
@@ -217,17 +223,59 @@
   <section data-tab="request">
     <div class="card">
       <h2>🙋 나의 원티드 신청</h2>
+      <div id="winBanner"></div>
       <div class="grid cols">
+        <div><label>연도</label><input type="number" id="reqYear" min="2024" max="2030"></div>
+        <div><label>월</label><input type="number" id="reqMonth" min="1" max="12"></div>
         <div><label>시작일</label><input type="number" id="reqStart" min="1" max="31"></div>
         <div><label>종료일</label><input type="number" id="reqEnd" min="1" max="31"></div>
         <div><label>종류</label><select id="reqShift"><option value="O">오프</option><option value="D">데이</option><option value="E">이브닝</option><option value="N">나이트</option></select></div>
       </div>
-      <div class="row" style="margin-top:12px"><button class="sm" onclick="addMyWanted()">신청 추가</button></div>
+      <div class="row" style="margin-top:12px"><button class="sm" id="reqBtn" onclick="submitMyWanted()">신청 제출</button><span id="reqMsg" class="hint"></span></div>
       <div id="myWanted" style="margin-top:14px"></div>
-      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. · 신청 기한이 만료되면 부서장에게 직접 문의하세요.</div>
-      <div class="hint">※ 서버 제출·부서장 승인 연동은 준비 중(Phase 5)입니다. 현재는 부서장이 생성 시 신청 내용을 반영합니다.</div>
+      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. 오프는 연속 최대 3일, 같은 팀 내 겹침은 불가합니다.</div>
     </div>
   </section>
+
+  <!-- ============ 신청 승인(관리자) ============ -->
+  <section data-tab="approve">
+    <div class="card">
+      <h2>📥 원티드 신청 관리 <span class="sub">부서장 전용</span></h2>
+      <div class="grid cols">
+        <div><label>연도</label><input type="number" id="apYear" min="2024" max="2030"></div>
+        <div><label>월</label><input type="number" id="apMonth" min="1" max="12"></div>
+        <div style="align-self:end"><button class="sm ghost" onclick="loadApprovals()">불러오기</button></div>
+      </div>
+      <div id="approveList" style="margin-top:14px"></div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:18px 0">
+      <h2 style="font-size:14px">⏰ 신청 기간 설정</h2>
+      <div class="grid cols">
+        <div><label>시작 일시</label><input type="datetime-local" id="winOpen"></div>
+        <div><label>마감 일시</label><input type="datetime-local" id="winClose"></div>
+        <div><label>안내 문구</label><input id="winNote" placeholder="예: 8월 신청 받습니다"></div>
+        <div style="align-self:end"><button class="sm" onclick="saveWindow()">기간 저장</button></div>
+      </div>
+      <div id="winMsg" class="hint"></div>
+    </div>
+  </section>
+
+  <!-- ============ 수신함(마스터) ============ -->
+  <section data-tab="inbox">
+    <div class="card"><h2>📨 피드백 수신함 <span class="sub">마스터 전용</span></h2>
+      <div id="inboxList"></div></div>
+  </section>
+</div>
+
+<!-- 피드백 플로팅 버튼 -->
+<button id="fbBtn" onclick="openFeedback()" style="position:fixed;right:18px;bottom:18px;z-index:50;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,.2);display:none">💬 마스터에게</button>
+<div id="fbModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;align-items:center;justify-content:center;padding:20px">
+  <div class="card" style="max-width:420px;width:100%">
+    <h2 style="margin-top:0">💬 마스터에게 메시지</h2>
+    <textarea id="fbText" placeholder="개선 요청·문의 등을 남겨주세요" style="min-height:100px"></textarea>
+    <div id="fbMsg" class="hint"></div>
+    <div class="row" style="margin-top:10px"><button class="sm" onclick="sendFeedback()">보내기</button>
+      <button class="sm ghost" onclick="document.getElementById('fbModal').style.display='none'">닫기</button></div>
+  </div>
 </div>
 
 <script>
@@ -269,31 +317,56 @@ async function initAuth() {
   onAuthed();
 }
 function isAdmin() { return ME && (ME.role === "admin" || ME.role === "master"); }
+function isMaster() { return ME && ME.role === "master"; }
 
-function onAuthed() {
+async function api(method, path, body) {
+  const opt = { method, headers: { ...authHeaders() } };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const res = await fetch(path, opt);
+  if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
+  let data = null; try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && data.detail) || ("오류 " + res.status));
+  return data;
+}
+
+async function onAuthed() {
   showAuth(false);
   document.getElementById("app").style.display = "block";
   userBox.style.display = "block";
   userName.textContent = ME.name;
   userRole.textContent = ROLE_KO[ME.role] || ME.role;
   buildTabs();
-  if (isAdmin() && roster.length === 0) seedRoster();
+  // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
+  try {
+    const r = await api("GET", "/api/roster");
+    if (r.nurses && r.nurses.length) roster = r.nurses.map(normRosterRow);
+    else if (isAdmin()) seedRoster();
+  } catch (e) { if (isAdmin() && roster.length === 0) seedRoster(); }
   renderRoster();
-  loadStored();
+  // 발행된 근무표를 서버에서 우선 로드(부서원 포함). 없으면 로컬 복원.
+  await loadPublished();
+}
+function normRosterRow(n) {
+  return { name: n.name || "", team: n.team || 1, rank: n.seniority_rank || n.rank || 1,
+    night: n.night_eligible !== false, trainee: !!n.is_trainee, trainer: n.trainer || "" };
 }
 
 /* ============================ 탭 ============================ */
-const TABS_ADMIN = [["setup","⚙️ 설정"],["board","📋 근무표"],["stats","📊 통계"]];
-const TABS_STAFF = [["board","📋 근무표"],["request","🙋 원티드 신청"],["stats","📊 내 통계"]];
+function tabDefs() {
+  if (isMaster()) return [["setup","⚙️ 설정"],["board","📋 근무표"],["approve","📥 신청관리"],["stats","📊 통계"],["inbox","📨 수신함"]];
+  if (isAdmin())  return [["setup","⚙️ 설정"],["board","📋 근무표"],["approve","📥 신청관리"],["stats","📊 통계"]];
+  return [["board","📋 근무표"],["request","🙋 원티드 신청"],["stats","📊 내 통계"]];
+}
 let curTab = null;
 function buildTabs() {
-  const defs = isAdmin() ? TABS_ADMIN : TABS_STAFF;
+  const defs = tabDefs();
   tabs.innerHTML = "";
   defs.forEach(([k, label]) => {
     const b = document.createElement("button");
     b.textContent = label; b.onclick = () => switchTab(k);
     b.dataset.k = k; tabs.appendChild(b);
   });
+  document.getElementById("fbBtn").style.display = "block";  // 피드백 버튼(전 역할)
   switchTab(defs[0][0]);
 }
 function switchTab(k) {
@@ -301,7 +374,9 @@ function switchTab(k) {
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.k === k));
   document.querySelectorAll("section[data-tab]").forEach(s => s.style.display = s.dataset.tab === k ? "block" : "none");
   if (k === "stats") renderStats();
-  if (k === "request") renderMyWanted();
+  if (k === "request") initRequestTab();
+  if (k === "approve") loadApprovals();
+  if (k === "inbox") loadInbox();
 }
 
 /* ============================ 명단(로스터) ============================ */
@@ -420,9 +495,54 @@ async function generate() {
   finally { btn.disabled = false; btn.textContent = "근무표 생성"; }
 }
 
-/* ============================ 저장/복원(로컬) ============================ */
+/* ============================ 저장/복원 ============================ */
 function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED)); } catch (e) {} }
-function loadStored() { try { const s = localStorage.getItem("duty_sched"); if (s) { SCHED = JSON.parse(s); renderBoard(); } } catch (e) {} }
+
+async function saveRoster() {
+  try {
+    const nurses = roster.filter(r => r.name.trim()).map(r => ({
+      name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+      night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "" }));
+    await api("PUT", "/api/roster", { nurses });
+    rosterMsg("✅ 명단을 저장했습니다.");
+  } catch (e) { rosterMsg("저장 실패: " + e.message, true); }
+}
+function rosterMsg(m, err) { const el = document.getElementById("rosterMsg"); if (el) { el.textContent = m; el.style.color = err ? "var(--err)" : "var(--ok)"; } }
+
+async function publishSchedule() {
+  if (!SCHED || !SCHED.year) { pubMsg("발행할 근무표가 없습니다.", true); return; }
+  try {
+    await api("POST", "/api/schedule/publish", { year: SCHED.year, month: SCHED.month, data: SCHED });
+    pubMsg("✅ 발행 완료 — 병동 구성원 모두가 조회할 수 있습니다.");
+  } catch (e) { pubMsg("발행 실패: " + e.message, true); }
+}
+function pubMsg(m, err) { const el = document.getElementById("pubMsg"); if (el) { el.textContent = m; el.style.color = err ? "var(--err)" : "var(--ok)"; } }
+
+// 서버의 발행 근무표 로드(부서원 포함). 없으면 로컬 복원.
+async function loadPublished(y, m) {
+  try {
+    let list = await api("GET", "/api/schedules");
+    if (!list || !list.length) { loadLocal(); return; }
+    let pick = (y && m) ? list.find(s => s.year === y && s.month === m) : list[0];
+    if (!pick) pick = list[0];
+    const r = await api("GET", `/api/schedule/${pick.year}/${pick.month}`);
+    SCHED = r.data; SCHED._published = true; SCHED._availMonths = list;
+    renderBoard();
+  } catch (e) { loadLocal(); }
+}
+function loadLocal() { try { const s = localStorage.getItem("duty_sched"); if (s) { SCHED = JSON.parse(s); renderBoard(); } } catch (e) {} }
+function onViewMonth() {
+  const v = document.getElementById("viewMonth").value; if (!v) return;
+  const [y, m] = v.split("-").map(Number); loadPublished(y, m);
+}
+function populateViewMonth() {
+  const sel = document.getElementById("viewMonth");
+  if (!SCHED || !SCHED._availMonths || SCHED._availMonths.length < 1) { sel.style.display = "none"; return; }
+  sel.style.display = "";
+  sel.innerHTML = SCHED._availMonths.map(s =>
+    `<option value="${s.year}-${s.month}" ${s.year===SCHED.year&&s.month===SCHED.month?"selected":""}>${s.year}년 ${s.month}월</option>`).join("");
+}
+function hideAdminEls() { document.querySelectorAll("[data-admin]").forEach(el => el.style.display = isAdmin() ? "" : "none"); }
 
 /* ============================ 근무표 렌더 ============================ */
 const WD = ["월","화","수","목","금","토","일"];
@@ -435,6 +555,7 @@ function renderBoard() {
   if (!has) return;
   const nd = SCHED.num_days, y = SCHED.year, m = SCHED.month;
   boardTitle.textContent = (y&&m) ? `${y}년 ${m}월 근무표 (${nd}일)` : `근무표 (${nd}일)`;
+  populateViewMonth(); hideAdminEls();
   const st = SCHED.feasible !== false;
   boardStatus.innerHTML = st
     ? `<div class="status ok">✅ ${esc(SCHED.message||"생성 완료")}${SCHED.unmet_wanted_off!=null?` · 미반영 원티드오프 ${SCHED.unmet_wanted_off}건`:""}</div>`
@@ -550,21 +671,110 @@ function renderStats(){
   body.innerHTML=html;
 }
 
-/* ============================ 원티드(부서원) ============================ */
-let myWanted=[];
-function addMyWanted(){
-  const s=+reqStart.value, e=+reqEnd.value||s, sh=reqShift.value;
-  if (!s){ return; }
-  myWanted.push({ start:s, end:Math.max(s,e), shift:sh }); renderMyWanted();
+/* ============================ 원티드(부서원, 서버) ============================ */
+const SH_KO = { O:"오프", D:"데이", E:"이브닝", N:"나이트" };
+const ST_KO = { pending:"대기", approved:"승인", rejected:"반려" };
+function nextMonth() { const d = new Date(); let y = d.getFullYear(), m = d.getMonth() + 2; if (m > 12) { m = 1; y++; } return [y, m]; }
+function reqYM() { return [+document.getElementById("reqYear").value, +document.getElementById("reqMonth").value]; }
+async function initRequestTab() {
+  if (!document.getElementById("reqYear").value) { const [y, m] = nextMonth(); reqYear.value = y; reqMonth.value = m; }
+  await loadWindowBanner(); await renderMyWanted();
 }
-function renderMyWanted(){
-  const el=document.getElementById("myWanted"); if(!el) return;
-  if (!myWanted.length){ el.innerHTML='<span class="muted">아직 신청이 없습니다.</span>'; return; }
-  const SH={O:"오프",D:"데이",E:"이브닝",N:"나이트"};
-  el.innerHTML='<table class="rtable"><thead><tr><th>기간</th><th>종류</th><th></th></tr></thead><tbody>'+
-    myWanted.map((w,i)=>`<tr><td>${w.start}일${w.end!==w.start?`~${w.end}일`:""}</td><td>${SH[w.shift]}</td><td class="chk"><button class="sm danger" onclick="myWanted.splice(${i},1);renderMyWanted()">×</button></td></tr>`).join("")+
+async function loadWindowBanner() {
+  const [y, m] = reqYM(); const el = document.getElementById("winBanner");
+  try {
+    const w = await api("GET", `/api/request-window/${y}/${m}`);
+    if (w.is_open) {
+      el.innerHTML = `<div class="status ok">✅ ${y}년 ${m}월 신청이 열려 있습니다.${w.closes_at?` 마감: ${fmtDate(w.closes_at)}`:""}${w.note?` · ${esc(w.note)}`:""}</div>`;
+      reqBtn.disabled = false;
+    } else {
+      el.innerHTML = `<div class="status err">⛔ ${esc(w.message||"신청이 닫혀 있습니다.")}</div>`;
+      reqBtn.disabled = true;
+    }
+  } catch (e) { el.innerHTML = ""; reqBtn.disabled = false; }
+}
+async function submitMyWanted() {
+  const [y, m] = reqYM(); const s = +reqStart.value, e = +reqEnd.value || s, sh = reqShift.value;
+  if (!s) { reqMsg.textContent = "시작일을 입력하세요."; return; }
+  try {
+    await api("POST", "/api/wanted", { year: y, month: m, start_day: s, end_day: Math.max(s, e), shift: sh });
+    reqMsg.textContent = "✅ 신청되었습니다."; reqMsg.style.color = "var(--ok)";
+    await renderMyWanted();
+  } catch (err) { reqMsg.textContent = "실패: " + err.message; reqMsg.style.color = "var(--err)"; }
+}
+async function renderMyWanted() {
+  const el = document.getElementById("myWanted"); if (!el) return;
+  const [y, m] = reqYM();
+  let list = [];
+  try { list = await api("GET", `/api/wanted/mine?year=${y}&month=${m}`); } catch (e) {}
+  if (!list.length) { el.innerHTML = '<span class="muted">이 달의 신청 내역이 없습니다.</span>'; return; }
+  el.innerHTML = '<table class="rtable"><thead><tr><th>기간</th><th>종류</th><th>상태</th><th></th></tr></thead><tbody>' +
+    list.map(w => `<tr><td>${w.start_day}일${w.end_day!==w.start_day?`~${w.end_day}일`:""}</td><td>${SH_KO[w.shift]||w.shift}</td>`+
+      `<td><span class="pill">${ST_KO[w.status]||w.status}</span></td>`+
+      `<td class="chk">${w.status==="pending"?`<button class="sm danger" onclick="cancelWanted(${w.id})">취소</button>`:""}</td></tr>`).join("") +
     '</tbody></table>';
 }
+async function cancelWanted(id) {
+  try { await api("DELETE", `/api/wanted/${id}`); await renderMyWanted(); }
+  catch (e) { reqMsg.textContent = "취소 실패: " + e.message; reqMsg.style.color = "var(--err)"; }
+}
+function fmtDate(iso) { try { return new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"2-digit", minute:"2-digit" }); } catch (e) { return iso; } }
+
+/* ============================ 신청 관리(관리자) ============================ */
+async function loadApprovals() {
+  if (!isAdmin()) return;
+  if (!document.getElementById("apYear").value) { const [y, m] = nextMonth(); apYear.value = y; apMonth.value = m; }
+  const y = +apYear.value, m = +apMonth.value;
+  const el = document.getElementById("approveList");
+  try {
+    const list = await api("GET", `/api/wanted?year=${y}&month=${m}`);
+    if (!list.length) { el.innerHTML = '<span class="muted">신청이 없습니다.</span>'; }
+    else el.innerHTML = '<div class="scroll"><table class="rtable"><thead><tr><th>간호사</th><th>기간</th><th>종류</th><th>상태</th><th>처리</th></tr></thead><tbody>' +
+      list.map(w => `<tr><td>${esc(w.nurse_name)}</td><td>${w.start_day}${w.end_day!==w.start_day?`~${w.end_day}`:""}일</td>`+
+        `<td>${SH_KO[w.shift]||w.shift}</td><td><span class="pill">${ST_KO[w.status]}</span></td>`+
+        `<td class="chk"><button class="sm" onclick="decide(${w.id},'approved')">승인</button> `+
+        `<button class="sm ghost" onclick="decide(${w.id},'rejected')">반려</button></td></tr>`).join("") +
+      '</tbody></table></div>';
+    // 신청 기간 인풋 채우기
+    const w = await api("GET", `/api/request-window/${y}/${m}`);
+    if (w.opens_at) winOpen.value = toLocalInput(w.opens_at);
+    if (w.closes_at) winClose.value = toLocalInput(w.closes_at);
+    winNote.value = w.note || "";
+  } catch (e) { el.innerHTML = `<span class="muted">불러오기 실패: ${esc(e.message)}</span>`; }
+}
+async function decide(id, status) {
+  try { await api("POST", `/api/wanted/${id}/decision`, { status }); await loadApprovals(); }
+  catch (e) { alert("처리 실패: " + e.message); }
+}
+async function saveWindow() {
+  const y = +apYear.value, m = +apMonth.value;
+  const body = { year: y, month: m, opens_at: fromLocalInput(winOpen.value), closes_at: fromLocalInput(winClose.value), note: winNote.value };
+  try { await api("PUT", "/api/request-window", body); winMsg.textContent = "✅ 신청 기간을 저장했습니다."; winMsg.style.color = "var(--ok)"; }
+  catch (e) { winMsg.textContent = "저장 실패: " + e.message; winMsg.style.color = "var(--err)"; }
+}
+function toLocalInput(iso) { try { const d = new Date(iso); const p = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; } catch (e) { return ""; } }
+function fromLocalInput(v) { return v ? new Date(v).toISOString() : null; }
+
+/* ============================ 피드백 ============================ */
+function openFeedback() { document.getElementById("fbModal").style.display = "flex"; fbMsg.textContent = ""; fbText.value = ""; }
+async function sendFeedback() {
+  const msg = fbText.value.trim(); if (!msg) { fbMsg.textContent = "내용을 입력하세요."; return; }
+  try { await api("POST", "/api/feedback", { message: msg }); fbMsg.textContent = "✅ 전송되었습니다."; fbMsg.style.color = "var(--ok)"; setTimeout(() => document.getElementById("fbModal").style.display = "none", 800); }
+  catch (e) { fbMsg.textContent = "실패: " + e.message; fbMsg.style.color = "var(--err)"; }
+}
+async function loadInbox() {
+  if (!isMaster()) return;
+  const el = document.getElementById("inboxList");
+  try {
+    const list = await api("GET", "/api/feedback");
+    if (!list.length) { el.innerHTML = '<span class="muted">받은 메시지가 없습니다.</span>'; return; }
+    el.innerHTML = list.map(f => `<div class="card" style="margin:0 0 10px;${f.read_at?"opacity:.6":""}">
+      <div class="row"><strong>${esc(f.from_name)}</strong> <span class="muted">${esc(f.from_email)} · ${f.ward?esc(f.ward)+"병동 · ":""}${fmtDate(f.created_at)}</span>
+      <span style="margin-left:auto">${f.read_at?'<span class="muted">읽음</span>':`<button class="sm ghost" onclick="markRead(${f.id})">읽음 처리</button>`}</span></div>
+      <div style="margin-top:6px;white-space:pre-wrap">${esc(f.message)}</div></div>`).join("");
+  } catch (e) { el.innerHTML = `<span class="muted">불러오기 실패: ${esc(e.message)}</span>`; }
+}
+async function markRead(id) { try { await api("POST", `/api/feedback/${id}/read`); await loadInbox(); } catch (e) {} }
 
 /* ============================ 내보내기 ============================ */
 function exportCSV(){
