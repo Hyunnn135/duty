@@ -11,16 +11,19 @@
   6. 연속 나이트 ≤ max_consecutive_nights (전월 이월 포함)
   7. 간호사별 최소 오프
   8. forbid 요청 / 사전 배정(연차 등) 고정
-  9. night_eligible=False 간호사 나이트 금지 (신규·임신)
+  9. night_eligible=False 간호사 나이트 금지 (임신 등, 면담 D3)
  10. 전월 경계 회전: 이월 마지막 근무 → 1일차 전이에도 3번 규칙 적용
+ 11. 팀별 최소 인원(team_min_staff), T6a 나이트 블록 ≥2, 월 나이트 상한
+ 12. F2 트레이닝 신규: 정원 제외 + 교육자와 항상 같은 근무(하드)
+ 13. E4 같은 팀 원티드 오프 겹침 금지(팀·날짜별 승인 오프 ≤1)
 
 소프트 (목적함수 감점):
   - 원티드 오프 미반영 (최우선 가중치) / 원티드 D·E·N 미반영 (낮은 가중치)
-  - prefer 요청 미반영
-  - 나이트·근무일 편차 (공정성)
-
-Phase 2 예정: 팀별 최소 인원, 적정(target) 인원 감점, T6a(N블록≥2)·T6b,
-EOD·소프트 전이 감점, 달력주 오프≥2, 미드=저연차, 프리셉터 동행, 월 나이트 상한.
+  - prefer 요청 미반영 / 나이트·근무일 편차 (공정성)
+  - 적정(target) 인원 부족, T6b 고립근무, EOD, 소프트 전이(M→D·E→M), 달력주 오프≥2
+  - 미드(액팅)=저연차, 프리셉터 동행
+  - E1 월 오프 수=목표(주말+공휴일), F1 연차 골고루(고/저연차 부재 감점),
+    C3 나이트 블록 직후 오프<2 감점
 """
 from __future__ import annotations
 
@@ -45,7 +48,11 @@ ALL_SHIFTS: list[Shift] = [*WORK_SHIFTS, Shift.OFF]
 
 def _preflight(req: ScheduleRequest) -> str | None:
     """명백히 풀 수 없는 입력을 사전 차단. 문제 있으면 사유 문자열 반환."""
-    n = len(req.nurses)
+    # 트레이닝 신규는 정원에 포함되지 않으므로 가용 인원에서 제외 (면담 F2)
+    n = sum(
+        1 for nu in req.nurses
+        if not (req.exclude_trainee_from_staffing and nu.is_trainee)
+    )
     worst = 0
     for d in range(req.num_days):
         st = req.staffing_for(d)
@@ -109,13 +116,20 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         for d in days:
             model.add_exactly_one(x[i, d, s] for s in ALL_SHIFTS)
 
+    # 트레이닝 신규는 정원(4/4/4)에 포함하지 않는다 (면담 F2 — 1인분 미수행)
+    trainee_idx = {
+        i for i, nu in enumerate(nurses)
+        if req.exclude_trainee_from_staffing and nu.is_trainee
+    }
+    counted = [i for i in range(N) if i not in trainee_idx]
+
     # (2) 교대별 최소 인원 (요일별 staffing 우선, 없으면 min_staff)
     for d in days:
         st = req.staffing_for(d)
         for s in WORK_SHIFTS:
             need = st.of(s).min if st is not None else req.min_staff.get(s)
             if need > 0:
-                model.add(sum(x[i, d, s] for i in range(N)) >= need)
+                model.add(sum(x[i, d, s] for i in counted) >= need)
 
     # (3) 회전 하드 금지 전이 (대원칙 P1·P3 — config에서 로드)
     for i in range(N):
@@ -207,6 +221,22 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                         sum(x[i, d, s] for i in members) >= req.team_min_staff
                     )
 
+    # (11b) F2: 트레이닝 신규는 교육자와 항상 같은 근무 (하드). 신규가 사전배정된
+    #       날(연차 등)은 제외한다.
+    preassigned_days: dict[int, set[int]] = {}
+    for p in req.pre_assigned:
+        if p.nurse_id in idx:
+            preassigned_days.setdefault(idx[p.nurse_id], set()).add(p.day)
+    for j, nurse in enumerate(nurses):
+        if not nurse.is_trainee or not nurse.trainer_id or nurse.trainer_id not in idx:
+            continue
+        t = idx[nurse.trainer_id]
+        for d in days:
+            if d in preassigned_days.get(j, set()):
+                continue
+            for s in ALL_SHIFTS:
+                model.add(x[j, d, s] == x[t, d, s])
+
     # (12) T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측: 단일 N 0건)
     if req.enforce_night_block and nd >= 2:
         for i, nurse in enumerate(nurses):
@@ -266,6 +296,21 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             miss = model.new_bool_var(f"wmiss_{i}_{d}_{w.shift.value}")
             model.add(miss == 1 - x[i, d, w.shift])
             (wanted_off_terms if w.shift == Shift.OFF else wanted_work_terms).append(miss)
+
+    # (E4) 같은 팀 내 원티드 오프는 같은 날 겹치지 않게 (하드): 팀·날짜별로 오프
+    #      신청자 중 실제 오프는 최대 1명. (신청 단계 검증과 병행 — PLAN 7.5)
+    if req.exclusive_team_wanted_off:
+        team_day_off: dict[tuple[int, int], list[int]] = {}
+        for w in req.wanted:
+            if w.nurse_id not in idx or w.shift != Shift.OFF:
+                continue
+            i = idx[w.nurse_id]
+            team = nurses[i].team
+            for d in w.days():
+                team_day_off.setdefault((team, d), []).append(i)
+        for (_team, d), members in team_day_off.items():
+            if len(set(members)) >= 2:
+                model.add(sum(x[i, d, Shift.OFF] for i in set(members)) <= 1)
 
     # (소프트) 공정성: 나이트/총근무 편차
     fairness_terms: list[cp_model.IntVar] = []
@@ -397,6 +442,67 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 model.add(miss >= work[j, d] - same)
                 preceptor_terms.append(miss)
 
+    # (소프트) E1: 월 오프 수 = 목표(주말+공휴일). 순수 오프(사전배정 연차 등 제외) 기준.
+    #         트레이닝 신규는 교육자를 따라가므로 제외.
+    offcount_terms: list = []
+    if req.weight_off_count > 0:
+        for i, nurse in enumerate(nurses):
+            if nurse.is_trainee:
+                continue
+            target = req.off_target_for(nurse.id)
+            if target is None:
+                continue
+            pre_days = preassigned_days.get(i, set())
+            pure_off = [x[i, d, Shift.OFF] for d in days if d not in pre_days]
+            if not pure_off:
+                continue
+            dev = model.new_int_var(0, nd, f"offdev_{i}")
+            total_off = sum(pure_off)
+            model.add(dev >= total_off - target)
+            model.add(dev >= target - total_off)
+            offcount_terms.append(dev)
+
+    # (소프트) F1: 한 교대에 저연차만/고연차만 몰리지 않게 — 상위권(rank≤2)·하위권(rank≥4)
+    #         부재 시 감점. (연차 정보가 있는 간호사에 한함)
+    seniority_terms: list = []
+    if req.weight_seniority_mix > 0:
+        seniors = [i for i, nu in enumerate(nurses)
+                   if nu.seniority_rank is not None and nu.seniority_rank <= 2]
+        juniors = [i for i, nu in enumerate(nurses)
+                   if nu.seniority_rank is not None and nu.seniority_rank >= 4]
+        for d in days:
+            for s in (Shift.DAY, Shift.EVENING, Shift.NIGHT):
+                if seniors:
+                    no_sen = model.new_bool_var(f"nosen_{d}_{s.value}")
+                    model.add(sum(x[i, d, s] for i in seniors) == 0).only_enforce_if(no_sen)
+                    model.add(sum(x[i, d, s] for i in seniors) >= 1).only_enforce_if(no_sen.negated())
+                    seniority_terms.append(no_sen)
+                if juniors:
+                    no_jun = model.new_bool_var(f"nojun_{d}_{s.value}")
+                    model.add(sum(x[i, d, s] for i in juniors) == 0).only_enforce_if(no_jun)
+                    model.add(sum(x[i, d, s] for i in juniors) >= 1).only_enforce_if(no_jun.negated())
+                    seniority_terms.append(no_jun)
+
+    # (소프트) C3: 나이트 블록(≥2) 직후 오프 2개 원칙. 오프 1개도 허용하되 지양.
+    nightkeep_terms: list = []
+    if req.weight_night_keep > 0:
+        for i in range(N):
+            for d in range(1, nd - 1):
+                # d에서 ≥2 나이트 블록이 끝남: N[d-1]=1, N[d]=1, N[d+1]=0
+                be = model.new_bool_var(f"nblk_{i}_{d}")
+                model.add(be <= x[i, d - 1, Shift.NIGHT])
+                model.add(be <= x[i, d, Shift.NIGHT])
+                model.add(be <= 1 - x[i, d + 1, Shift.NIGHT])
+                model.add(
+                    be >= x[i, d - 1, Shift.NIGHT] + x[i, d, Shift.NIGHT]
+                    + (1 - x[i, d + 1, Shift.NIGHT]) - 2
+                )
+                for k in (1, 2):
+                    if d + k < nd:
+                        p = model.new_bool_var(f"nkeep_{i}_{d}_{k}")
+                        model.add(p >= be - x[i, d + k, Shift.OFF])
+                        nightkeep_terms.append(p)
+
     # ---- 목적 함수 ----
     objective = []
     if wanted_off_terms:
@@ -421,6 +527,12 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_mid_senior * sum(midsenior_terms))
     if preceptor_terms:
         objective.append(req.weight_preceptor * sum(preceptor_terms))
+    if offcount_terms:
+        objective.append(req.weight_off_count * sum(offcount_terms))
+    if seniority_terms:
+        objective.append(req.weight_seniority_mix * sum(seniority_terms))
+    if nightkeep_terms:
+        objective.append(req.weight_night_keep * sum(nightkeep_terms))
     if objective:
         model.minimize(sum(objective))
 

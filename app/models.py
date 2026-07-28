@@ -47,20 +47,36 @@ class LeaveCode(str, Enum):
 
 
 class Nurse(BaseModel):
-    """간호사 한 명. 팀은 고정 속성(A안), 명단 순서=경력·능력순."""
+    """간호사 한 명. 팀은 고정 속성(A안), 명단 순서=경력·능력순.
+
+    액팅(Acting) 역할: 각 교대(D/E/N) 4명 = 팀당 1명(3팀) + 액팅 1명. 액팅은 팀
+    소속 없이 전 팀 환자의 투약·바이탈을 담당하는 최저연차 간호사이며, 실제 근무시간은
+    미드(M)이지만 수당 문제로 전산상 D/E로 기록된다(면담 B1). 모델에서는 미드(M) 교대가
+    액팅 역할을 나타낸다.
+    """
 
     id: str
     name: str
     team: int = Field(1, ge=1, description="소속 팀 (고정 속성)")
     seniority_rank: int | None = Field(
-        None, ge=1, description="팀 내 경력·능력 순위 (1=최고참). 미드 배정 등에 사용"
+        None, ge=1, description="팀 내 경력·능력 순위 (1=최고참). 액팅(미드) 배정 등에 사용"
     )
     night_eligible: bool = Field(
-        True, description="나이트 가능 여부. 신규·임신(산후 1년 미만) 시 False"
+        True, description="나이트 가능 여부. 임신(산후 1년 미만) 시 False (면담 D3: 신규는 나이트 제한 없음)"
     )
     is_new: bool = Field(False, description="신규 여부 (입사 N개월 미만)")
     preceptor_id: str | None = Field(
         None, description="(신규인 경우) 프리셉터 간호사 id — 같은 근무 배정 소프트 제약"
+    )
+    is_trainee: bool = Field(
+        False,
+        description="신규 트레이닝 중 여부(입사 첫 한 달). True면 정원(4/4/4)에서 제외되고 "
+        "교육자와 항상 같은 교대에 하드 배정된다 (면담 F2).",
+    )
+    trainer_id: str | None = Field(
+        None,
+        description="(트레이닝 중인 경우) 교육자 간호사 id. 매달 달라질 수 있음. 해당 기간 "
+        "동안 항상 같은 근무에 하드 배정 (면담 F2).",
     )
 
 
@@ -193,6 +209,20 @@ class ScheduleRequest(BaseModel):
     enforce_night_block: bool = Field(
         True, description="T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측 하드)"
     )
+    exclusive_team_wanted_off: bool = Field(
+        True,
+        description="E4: 같은 팀 내 원티드 오프가 같은 날 겹치지 않도록 하드 제약 "
+        "(팀당 하루 승인 오프 ≤ 1). 신청 단계 검증과 병행.",
+    )
+    exclude_trainee_from_staffing: bool = Field(
+        True,
+        description="F2: 트레이닝 중(is_trainee) 간호사를 교대 최소 정원(4/4/4) 계산에서 제외.",
+    )
+    off_count_target: dict[str, int] | None = Field(
+        None,
+        description="E1: 간호사 id → 이번 달 목표 오프 수(보통 토+일+공휴일 수). None이고 "
+        "year/month가 있으면 (주말+공휴일) 수로 자동 산출. 순수 오프(연차 등 사전배정 제외) 기준.",
+    )
 
     requests: list[ShiftRequest] = Field(default_factory=list)
     wanted: list[WantedRequest] = Field(default_factory=list)
@@ -212,8 +242,11 @@ class ScheduleRequest(BaseModel):
     weight_eod: int = Field(4, ge=0, description="T11b: E-OFF-D 패턴 페널티 (지양)")
     weight_soft_transition: int = Field(3, ge=0, description="M→D·E→M 지양 전이 페널티")
     weight_week_off: int = Field(5, ge=0, description="달력주(월~일) 오프<2 부족 페널티")
-    weight_mid_senior: int = Field(8, ge=0, description="미드를 상위권(경력 1~3위)에 배정 시 페널티")
+    weight_mid_senior: int = Field(8, ge=0, description="미드(액팅)를 상위권(경력 1~3위)에 배정 시 페널티")
     weight_preceptor: int = Field(6, ge=0, description="프리셉티 근무일에 프리셉터 비동행 페널티")
+    weight_off_count: int = Field(40, ge=0, description="E1: 월 오프 수가 목표(주말+공휴일)와 어긋난 만큼 페널티")
+    weight_seniority_mix: int = Field(5, ge=0, description="F1: 한 교대가 저연차만/고연차만으로 채워질 때 페널티")
+    weight_night_keep: int = Field(6, ge=0, description="C3: 나이트 블록(≥2) 직후 오프가 2개 미만이면 페널티")
 
     time_limit_seconds: float = Field(15.0, gt=0, le=120)
 
@@ -261,6 +294,15 @@ class ScheduleRequest(BaseModel):
         for nid in self.carry_over:
             if nid not in ids:
                 raise ValueError(f"carry_over의 간호사 id '{nid}' 가 명단에 없습니다.")
+        for nurse in self.nurses:
+            if nurse.trainer_id is not None and nurse.trainer_id not in ids:
+                raise ValueError(f"간호사 '{nurse.id}'의 trainer_id '{nurse.trainer_id}' 가 명단에 없습니다.")
+            if nurse.is_trainee and nurse.trainer_id is None:
+                raise ValueError(f"트레이닝 중인 간호사 '{nurse.id}'는 trainer_id가 필요합니다 (면담 F2).")
+        if self.off_count_target:
+            for nid in self.off_count_target:
+                if nid not in ids:
+                    raise ValueError(f"off_count_target의 간호사 id '{nid}' 가 명단에 없습니다.")
         return self
 
     # ---- 달력 도우미 ----
@@ -285,6 +327,25 @@ class ScheduleRequest(BaseModel):
             return None
         cat = self.day_category(d)
         return self.staffing.get(cat) or self.staffing.get("weekday")
+
+    def default_off_target(self) -> int | None:
+        """E1: year/month 지정 시 이번 달 (주말+공휴일) 수 = 목표 오프 수. 아니면 None."""
+        fw = self.first_weekday()
+        if fw is None:
+            return None
+        weekend = sum(1 for d in range(self.num_days) if (fw + d) % 7 >= 5)
+        holidays = set(self.holidays)
+        # 주말이면서 공휴일인 날을 중복 계산하지 않도록
+        extra_holiday = sum(
+            1 for h in holidays if 1 <= h <= self.num_days and (fw + (h - 1)) % 7 < 5
+        )
+        return weekend + extra_holiday
+
+    def off_target_for(self, nurse_id: str) -> int | None:
+        """간호사별 목표 오프 수: off_count_target 우선, 없으면 default_off_target()."""
+        if self.off_count_target and nurse_id in self.off_count_target:
+            return self.off_count_target[nurse_id]
+        return self.default_off_target()
 
 
 class NurseSchedule(BaseModel):

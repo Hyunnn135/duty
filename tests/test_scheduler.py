@@ -313,3 +313,70 @@ def test_carry_over_work_streak():
     assert res.feasible
     n0 = next(s for s in res.schedules if s.nurse_id == "n0")
     assert n0.shifts[0] == Shift.OFF
+
+
+def test_trainee_excluded_from_staffing_and_paired():
+    """F2: 트레이닝 신규는 정원 제외 + 교육자와 항상 같은 근무."""
+    # 정원 D2/E2/N1 = 하루 5명 필요. 트레이너 포함 인원은 6명이지만
+    # 트레이너(n0)와 트레이니(n5)는 한 몸처럼 움직이고 트레이니는 정원 미포함.
+    ms = MinStaff(D=2, E=2, N=1)
+    nurses = _nurses(9)
+    nurses[8] = Nurse(id="n8", name="신규", is_trainee=True, trainer_id="n0")
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms)
+    res = solve(req)
+    assert res.feasible
+    by = {s.nurse_id: s for s in res.schedules}
+    # 트레이니는 매일 교육자와 동일 근무
+    for d in range(7):
+        assert by["n8"].shifts[d] == by["n0"].shifts[d]
+    # 정원 계산에서 트레이니 제외: 각 근무일 정원은 나머지 인원으로 충족
+    for d in range(7):
+        working = [s for s in res.schedules if s.nurse_id != "n8"]
+        day = [w.shifts[d] for w in working]
+        assert day.count(Shift.DAY) >= 2
+        assert day.count(Shift.EVENING) >= 2
+        assert day.count(Shift.NIGHT) >= 1
+
+
+def test_trainee_requires_trainer():
+    import pytest
+    with pytest.raises(ValueError):
+        ScheduleRequest(
+            num_days=7,
+            nurses=[Nurse(id="a", name="신규", is_trainee=True)],
+        )
+
+
+def test_team_wanted_off_no_overlap():
+    """E4: 같은 팀 원티드 오프는 같은 날 겹치지 않는다."""
+    from app.models import WantedRequest
+    nurses = [Nurse(id=f"n{i}", name=f"간호사{i}", team=1) for i in range(4)]
+    nurses += [Nurse(id=f"m{i}", name=f"타팀{i}", team=2) for i in range(4)]
+    # 팀1의 n0, n1이 같은 날(3일) 오프 신청 → 하나만 승인 가능
+    req = ScheduleRequest(
+        num_days=7, nurses=nurses, min_staff=MinStaff(D=1, E=1, N=1),
+        wanted=[
+            WantedRequest(nurse_id="n0", start_day=3, shift=Shift.OFF),
+            WantedRequest(nurse_id="n1", start_day=3, shift=Shift.OFF),
+        ],
+    )
+    res = solve(req)
+    assert res.feasible
+    by = {s.nurse_id: s for s in res.schedules}
+    offs = (by["n0"].shifts[3] == Shift.OFF) + (by["n1"].shifts[3] == Shift.OFF)
+    assert offs <= 1  # 팀 내 겹침 금지
+
+
+def test_off_count_target_soft():
+    """E1: year/month 지정 시 오프 수가 (주말+공휴일) 목표에 근접."""
+    nurses = [Nurse(id=f"n{i}", name=f"간호사{i}") for i in range(10)]
+    req = ScheduleRequest(
+        year=2026, month=2, nurses=nurses, min_staff=MinStaff(D=2, E=2, N=1),
+    )
+    target = req.default_off_target()
+    assert target is not None and target >= 8  # 2026-02 주말 8일
+    res = solve(req)
+    assert res.feasible
+    # 대부분 간호사의 오프 수가 목표에서 크게 벗어나지 않는다
+    for s in res.schedules:
+        assert abs(s.counts["O"] - target) <= 2
