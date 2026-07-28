@@ -31,35 +31,39 @@ HARD_FORBIDDEN_GAP_PATTERNS: list[tuple[Shift, Shift, Shift]] = [
 ]
 
 # ---- 과로 방지 상한 -----------------------------------------------------
-MAX_CONSECUTIVE_DAYS = 5    # 실측 최대 5 (대원칙 승격 후보 F)
-MAX_CONSECUTIVE_NIGHTS = 3  # 실측 + 복지부 가이드라인 일치 (확정)
+MAX_CONSECUTIVE_DAYS = 5    # 대원칙 확정 (면담 C1: "5일은 절대 원칙. 이후 불가능")
+MAX_CONSECUTIVE_NIGHTS = 3  # 대원칙 확정 (면담 C2 + 복지부 가이드라인 일치)
 
-# ---- 61병동 인원 기준 (⚠️ 면담 B1·B5 확정 전 실측 기반 추정) -------------
-# 실측(8월 하단 집계): 평일 대략 D5/E5/N4, 주말 D4/E4/N4, 미드는 간헐(0~1).
+# ---- 61병동 인원 기준 (면담 B1·B5 확정) ---------------------------------
+# 확정: 각 교대 D/E/N = 4명 = 팀당 1명(3팀) + 액팅 1명. 4/4/4는 '절대 최소'(B5).
+# 평일에는 여유 인원으로 D/E가 5까지 갈 수 있어 target=5(소프트)로 둔다(실측 8월).
+# 공휴일은 평일과 구분하지 않는다(면담 E2) → holiday = weekday.
+# 트레이닝 신규는 이 정원에서 제외된다(면담 F2, solver에서 처리).
 DEFAULT_STAFFING: dict[str, DayStaffing] = {
     "weekday": DayStaffing(
         D=ShiftStaff(min=4, target=5),
         E=ShiftStaff(min=4, target=5),
-        N=ShiftStaff(min=3, target=4),
+        N=ShiftStaff(min=4, target=4),
         M=ShiftStaff(min=0),
     ),
     "weekend": DayStaffing(
-        D=ShiftStaff(min=3, target=4),
-        E=ShiftStaff(min=3, target=4),
-        N=ShiftStaff(min=3, target=4),
+        D=ShiftStaff(min=4, target=4),
+        E=ShiftStaff(min=4, target=4),
+        N=ShiftStaff(min=4, target=4),
         M=ShiftStaff(min=0),
     ),
+    # 공휴일 = 평일 취급 (면담 E2). 오프 카운트(E1)에는 공휴일도 오프 quota로 반영.
     "holiday": DayStaffing(
-        D=ShiftStaff(min=3, target=4),
-        E=ShiftStaff(min=3, target=4),
-        N=ShiftStaff(min=3, target=4),
+        D=ShiftStaff(min=4, target=5),
+        E=ShiftStaff(min=4, target=5),
+        N=ShiftStaff(min=4, target=4),
         M=ShiftStaff(min=0),
     ),
 }
 
-# 팀당 각 교대(D/E/N) 최소 인원 (실측: 61일×3교대×3팀 중 미커버 1건 → 사실상 하드)
-TEAM_MIN_PER_SHIFT = 1  # Phase 2에서 하드 제약으로 연결
+# 팀당 각 교대(D/E/N) 최소 인원. 확정: 각 팀 한 명씩 배치(면담 B1) → 하드.
+TEAM_MIN_PER_SHIFT = 1
 
-# ---- 나이트 정책 (⚠️ 면담 D1·D2 확정 전) --------------------------------
-MAX_NIGHTS_PER_MONTH = 7        # 실습 자료 기준, 실측 최대 7과 부합
-NIGHT_KEEPER_MAX_PER_MONTH = 15  # 야간전담 월 상한 (복지부 2023 개정 기준)
+# ---- 나이트 정책 (면담 D1·D2·D4 확정) ----------------------------------
+MAX_NIGHTS_PER_MONTH = 7        # 확정 (면담 D1: "최대 7개, 2개월 합 상한 없음")
+NIGHT_KEEPER_MAX_PER_MONTH = 15  # 야간전담 월 상한. 확정: 61병동엔 야간전담 없음(면담 D2)
