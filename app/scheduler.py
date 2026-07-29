@@ -130,13 +130,26 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     }
     counted = [i for i in range(N) if i not in trainee_idx]
 
-    # (2) 교대별 최소 인원 (요일별 staffing 우선, 없으면 min_staff)
-    for d in days:
-        st = req.staffing_for(d)
-        for s in WORK_SHIFTS:
-            need = st.of(s).min if st is not None else req.min_staff.get(s)
-            if need > 0:
-                model.add(sum(x[i, d, s] for i in counted) >= need)
+    # (2) 교대별 인원.
+    #   daily_patterns 지정 시: 매일 허용 패턴 중 정확히 하나와 '정확' 일치(초과·미달 불가).
+    #   미지정 시: 기존 최소 인원(요일별 staffing 또는 min_staff) ≥ 제약.
+    if req.daily_patterns:
+        pats = req.daily_patterns
+        for d in days:
+            sel = [model.new_bool_var(f"pat_{d}_{p}") for p in range(len(pats))]
+            model.add_exactly_one(sel)
+            for s in WORK_SHIFTS:
+                model.add(
+                    sum(x[i, d, s] for i in counted)
+                    == sum(sel[p] * int(pats[p].get(s.value, 0)) for p in range(len(pats)))
+                )
+    else:
+        for d in days:
+            st = req.staffing_for(d)
+            for s in WORK_SHIFTS:
+                need = st.of(s).min if st is not None else req.min_staff.get(s)
+                if need > 0:
+                    model.add(sum(x[i, d, s] for i in counted) >= need)
 
     # (3) 회전 하드 금지 전이 (대원칙 P1·P3 — config에서 로드)
     for i in range(N):
@@ -276,8 +289,11 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     if req.exact_mode and lo is None and hi is None:
         total_n = 0
         for d in days:
-            st = req.staffing_for(d)
-            total_n += st.of(Shift.NIGHT).min if st is not None else req.min_staff.get(Shift.NIGHT)
+            if req.daily_patterns:
+                total_n += min(int(p.get("N", 0)) for p in req.daily_patterns)
+            else:
+                st = req.staffing_for(d)
+                total_n += st.of(Shift.NIGHT).min if st is not None else req.min_staff.get(Shift.NIGHT)
         elig = sum(1 for nu in nurses if nu.night_eligible)
         if elig > 0 and total_n > 0:
             import math as _math
@@ -294,6 +310,23 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 model.add(tot >= lo)
             if hi is not None:
                 model.add(tot <= hi)
+
+    # (13d) 오프 수 하드 밴드(exact_mode): 목표 오프 T가 있으면 인당 오프를 [T, T+1]로 고정.
+    #   합-편차 최소화(offcount 소프트)는 "1명 14 + 3명 12"와 "6명 12"를 구분하지 못해 특정
+    #   인원에게 오프가 몰릴 수 있다. 하드 밴드로 전원 11~12 같은 균등 분포를 보장한다.
+    if req.exact_mode:
+        _T = req.default_off_target()
+        if _T is not None:
+            for i, nurse in enumerate(nurses):
+                if nurse.is_trainee:
+                    continue
+                pre = preassigned_days.get(i, set())
+                pure_off = [x[i, d, Shift.OFF] for d in days if d not in pre]
+                if not pure_off:
+                    continue
+                off_i = sum(pure_off)
+                model.add(off_i >= _T)
+                model.add(off_i <= _T + 1)
 
     # (13c) D·E·N 균형: 각 간호사에게 데이/이브닝/나이트가 한쪽으로 쏠리지 않게.
     #   - 하드: 세 근무의 개수 격차 ≤ max_shift_spread (exact_mode면 기본 3 자동)
@@ -596,6 +629,27 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 model.add(b >= sum(work[i, d + k] for k in range(5)) - 4)
                 longblock_terms.append(b)
 
+    # (소프트) 나이트 블록 사이 텀 확보 — 나이트 후 오프만 하고 바로 다시 나이트로 복귀(N…O…N)를
+    #   지양. 중간에 데이/이브닝 근무가 끼면 페널티 없음(권장 패턴). 짧은 텀일수록 페널티 가중.
+    nightgap_terms: list = []
+    if req.weight_night_gap_work > 0:
+        for i, nurse in enumerate(nurses):
+            if not nurse.night_eligible:
+                continue
+            for d in range(nd):
+                for g in (1, 2, 3):
+                    e = d + g + 1
+                    if e >= nd:
+                        continue
+                    # N[d]=1, d+1..d+g 모두 OFF, N[e]=1 이면 페널티(중간 근무 없이 나이트 복귀)
+                    p = model.new_bool_var(f"ngap_{i}_{d}_{g}")
+                    terms = [x[i, d, Shift.NIGHT], x[i, e, Shift.NIGHT]]
+                    terms += [x[i, d + k, Shift.OFF] for k in range(1, g + 1)]
+                    model.add(p >= sum(terms) - (len(terms) - 1))
+                    # 텀이 짧을수록(4 - g) 가중 → 1일 텀이 가장 큰 페널티
+                    for _w in range(4 - g):
+                        nightgap_terms.append(p)
+
     # (소프트) 주말 오프 공정성 — 주말(토·일) 오프 수의 인당 편차 최소화 (웹리서치: 주말 공정 분배)
     weekendfair_terms: list = []
     fw2 = req.first_weekday()
@@ -647,6 +701,8 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_team_off_overlap * sum(teamoff_terms))
     if longblock_terms:
         objective.append(req.weight_long_block * sum(longblock_terms))
+    if nightgap_terms:
+        objective.append(req.weight_night_gap_work * sum(nightgap_terms))
     if weekendfair_terms:
         objective.append(req.weight_weekend_fair * sum(weekendfair_terms))
     if balance_terms:

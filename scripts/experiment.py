@@ -24,7 +24,7 @@ from app.scheduler import solve
 ROOT = Path(__file__).resolve().parent.parent
 D = json.loads((ROOT / "data" / "schedule.json").read_text(encoding="utf-8"))
 W = json.loads((ROOT / "data" / "wanted_2026_08.json").read_text(encoding="utf-8"))
-YEAR, MONTH, NDAYS, HOLIDAYS = 2026, 8, 31, [15]  # 광복절
+YEAR, MONTH, NDAYS, HOLIDAYS = 2026, 8, 31, [15, 17]  # 광복절 + 대체공휴일(8/17)
 TIEBREAK = False  # 사전식 타이브레이커는 규모상 비현실적(보고서 §6) → 기본 다양화/품질 모드
 SIMPLE_FAIR = False  # 공정성을 minimize-max로 근사(최적 증명 가속) — 수렴 실험에서 True
 
