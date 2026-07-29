@@ -48,6 +48,14 @@ export BUCKET=${PROJECT_ID}-duty-data
 export REPO_OWNER_SLASH_NAME=Hyunnn135/duty   # GitHub owner/repo
 ```
 
+> **⚡ 빠른 길**: §2~6을 한 번에 실행하는 스크립트를 제공한다. `gcloud auth login` +
+> `gcloud config set project <ID>` 후 아래를 실행하면 API 활성화·버킷·시크릿·서비스계정·
+> WIF까지 만들고, **GitHub에 등록할 값들을 출력**한다. 그다음 §7만 하면 된다.
+> ```bash
+> bash scripts/gcp_setup.sh          # REGION/SERVICE 등은 환경변수로 덮어쓰기 가능
+> ```
+> 아래 §2~6은 이 스크립트가 자동으로 하는 일을 단계별로 설명한 것이다(수동 실행/이해용).
+
 ## 2. API 활성화
 
 ```bash
@@ -188,7 +196,7 @@ gcloud secrets add-iam-policy-binding smtp-password \
 ```bash
 gcloud run deploy "$SERVICE" --source . --region "$REGION" \
   --allow-unauthenticated --execution-environment gen2 \
-  --cpu 2 --memory 1Gi --concurrency 8 --min-instances 1 --max-instances 1 \
+  --cpu 2 --memory 2Gi --concurrency 8 --timeout 300 --min-instances 1 --max-instances 1 \
   --set-env-vars DUTY_DB=/data/duty.db \
   --set-secrets DUTY_SECRET=duty-secret:latest \
   --add-volume name=data,type=cloud-storage,bucket="$BUCKET" \
@@ -212,7 +220,9 @@ docker run --rm -p 8080:8080 -e DUTY_SECRET=devsecret -e DUTY_DB=/data/duty.db d
 
 - **콜드스타트**: OR-Tools 임포트로 최초 기동 ~8초. `--min-instances 1`로 상시 1대를
   띄워 콜드스타트와 SQLite 단일 인스턴스 일관성을 동시에 해결한다.
-- **동시성**: 근무표 생성은 CPU를 많이 쓰므로 `--concurrency 8`, `--cpu 2`로 제한.
+- **동시성·타임아웃**: 근무표 생성은 CPU를 많이 쓰므로 `--concurrency 8`, `--cpu 2`로 제한.
+  운영 모드(정확 인원 패턴) 생성은 최대 120초 계산하므로 요청 타임아웃을 `--timeout 300`으로
+  여유를 둔다(콜드스타트 ~8초 + 계산 120초 + 여유). 메모리는 OR-Tools 대규모 풀이를 위해 `2Gi`.
 - **비용**: 단일 인스턴스 상시 가동 + 소규모 트래픽 기준 월 소액(수 달러 내외). GCS·시크릿·
   빌드도 무료 티어 범위 내. 정확한 비용은 GCP 요금 계산기로 확인.
 

@@ -45,7 +45,7 @@ jobs:
             --region "${{ vars.GCP_REGION }}" \
             --allow-unauthenticated \
             --execution-environment gen2 \
-            --cpu 2 --memory 1Gi --concurrency 8 --timeout 120 \
+            --cpu 2 --memory 2Gi --concurrency 8 --timeout 300 \
             --min-instances 1 --max-instances 1 \
             --set-env-vars "DUTY_DB=/data/duty.db${{ vars.EXTRA_ENV }}" \
             --set-secrets "DUTY_SECRET=duty-secret:latest${{ vars.EXTRA_SECRETS }}" \
