@@ -133,8 +133,11 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     # (2) 교대별 인원.
     #   daily_patterns 지정 시: 매일 허용 패턴 중 정확히 하나와 '정확' 일치(초과·미달 불가).
     #   미지정 시: 기존 최소 인원(요일별 staffing 또는 min_staff) ≥ 제약.
+    acting_day_terms: list = []  # 액팅(M) 포함 패턴이 안 뽑힌 날 = 소폭 페널티(액팅 소폭 우대)
+    acting_sel_all: list = []     # 날짜별 '액팅 패턴 선택됨' 지시자(하드 일수 고정용)
     if req.daily_patterns:
         pats = req.daily_patterns
+        acting_pat = [p for p in range(len(pats)) if int(pats[p].get("M", 0)) > 0]
         for d in days:
             sel = [model.new_bool_var(f"pat_{d}_{p}") for p in range(len(pats))]
             model.add_exactly_one(sel)
@@ -143,6 +146,16 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                     sum(x[i, d, s] for i in counted)
                     == sum(sel[p] * int(pats[p].get(s.value, 0)) for p in range(len(pats)))
                 )
+            if acting_pat:
+                is_act = model.new_bool_var(f"act_{d}")
+                model.add(is_act == sum(sel[p] for p in acting_pat))
+                acting_sel_all.append(is_act)
+                # 액팅 없는 날 = 소폭 페널티 → 최소화하면 액팅 날이 늘어남(소프트)
+                if req.weight_acting_day > 0:
+                    acting_day_terms.append(1 - is_act)
+        # 액팅 일수 하드 고정(A/B 혼합 비율 제어)
+        if req.acting_days is not None and acting_sel_all:
+            model.add(sum(acting_sel_all) == req.acting_days)
     else:
         for d in days:
             st = req.staffing_for(d)
@@ -703,6 +716,8 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_long_block * sum(longblock_terms))
     if nightgap_terms:
         objective.append(req.weight_night_gap_work * sum(nightgap_terms))
+    if acting_day_terms:
+        objective.append(req.weight_acting_day * sum(acting_day_terms))
     if weekendfair_terms:
         objective.append(req.weight_weekend_fair * sum(weekendfair_terms))
     if balance_terms:
