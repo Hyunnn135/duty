@@ -133,7 +133,17 @@
         <div><label>연속 나이트 최대</label><input type="number" id="maxNight" value="3" min="1"></div>
         <div><label>공휴일 (쉼표, 날짜)</label><input id="holidays" placeholder="예: 15"></div>
       </div>
-      <div class="hint">월 오프 수는 (토+일+공휴일) 수에 맞춰 자동 최적화됩니다 (대원칙 P7). 공휴일은 평일처럼 인원을 채웁니다(면담 E2).</div>
+      <div class="hint">월 오프 수는 (토+일+공휴일) 수에 맞춰 자동 최적화됩니다 (대원칙 P7). 공휴일은 평일처럼 인원을 채웁니다(면담 E2). <b>공휴일 입력 시 대체공휴일도 포함하세요</b> (예: 2026-08 → <code>15,17</code>).</div>
+    </div>
+
+    <div class="card">
+      <h2>🎯 운영 모드 <span class="sub">61병동 확정 규칙 — 매일 인원을 정확히 고정</span></h2>
+      <label style="display:flex;align-items:center;gap:6px;font-weight:600;margin-bottom:8px">
+        <input type="checkbox" id="opMode" checked style="width:auto"> 정확 인원 패턴 고정 (권장)</label>
+      <div class="grid cols">
+        <div><label>액팅(미드) 근무 일수</label><input type="number" id="actingDays" value="8" min="0" max="16"></div>
+      </div>
+      <div class="hint">켜면 매일 인원이 <b>D4·E4·N4·M1(액팅 있는 날)</b> 또는 <b>D5·E5·N4(액팅 없는 날)</b> 중 하나로 <b>정확히</b> 고정됩니다(초과·미달 불가). 나이트 균등·오프 11~12 균등·원티드 100% 우선이 함께 적용됩니다. 인원 기준은 위의 Day/Evening/Night <b>최소값</b>을 기준 패턴으로 사용합니다. 액팅 일수↔오프 트레이드오프: <b>액팅 1일 = 오프 12개인 인원 1명 증가</b>(최대 16일). 최고 품질 보장을 위해 계산에 약 1~2분이 걸립니다.</div>
     </div>
 
     <div class="card">
@@ -468,14 +478,29 @@ function buildPayload() {
   const holidays = holidaysEl().split(",").map(s => parseInt(s.trim(),10)).filter(x => x>=1);
   const wanted = parseWanted(byName), pre = parsePre(byName), carry = parseCarry(byName);
 
-  return {
+  const exactChk = !!(document.getElementById("exactMode") && document.getElementById("exactMode").checked);
+  const opMode = !!(document.getElementById("opMode") && document.getElementById("opMode").checked);
+  const payload = {
     year: +year.value, month: +month.value, nurses, staffing, holidays,
     team_min_staff: +teamMin.value, max_nights_per_month: +maxNights.value || null,
     max_consecutive_days: +maxCons.value, max_consecutive_nights: +maxNight.value,
     wanted, pre_assigned: pre, carry_over: carry,
-    exact_mode: !!(document.getElementById("exactMode") && document.getElementById("exactMode").checked),
-    time_limit_seconds: (document.getElementById("exactMode") && document.getElementById("exactMode").checked) ? 60 : 20,
+    exact_mode: exactChk,
+    time_limit_seconds: exactChk ? 60 : 20,
   };
+  if (opMode) {
+    // 61병동 확정 규칙: 매일 정확 인원 두 패턴 중 하나로 고정 + 액팅 일수 제어
+    const bD = +minD.value, bE = +minE.value, bN = +minN.value;
+    payload.daily_patterns = [
+      { D: bD, E: bE, N: bN, M: 1 },        // 액팅 있는 날
+      { D: bD + 1, E: bE + 1, N: bN, M: 0 }, // 액팅 없는 날
+    ];
+    const ad = document.getElementById("actingDays");
+    payload.acting_days = ad ? Math.max(0, +ad.value || 0) : 8;
+    payload.exact_mode = true;
+    payload.time_limit_seconds = 120;
+  }
+  return payload;
 }
 function holidaysEl(){ return document.getElementById("holidays").value; }
 function parseWanted(byName) {
@@ -510,7 +535,9 @@ async function generate() {
   if (!isAdmin()) return;
   const btn = genBtn; const payload = buildPayload();
   if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
-  btn.disabled = true; btn.textContent = "생성 중..."; genState.textContent = "⏳ 최적 근무표 계산 중...";
+  const slow = payload.time_limit_seconds >= 60;
+  btn.disabled = true; btn.textContent = "생성 중...";
+  genState.textContent = slow ? "⏳ 최적 근무표 계산 중… (운영 모드는 약 1~2분 소요됩니다. 창을 닫지 마세요)" : "⏳ 최적 근무표 계산 중...";
   try {
     const res = await fetch("/api/schedule", { method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(payload) });
