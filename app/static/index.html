@@ -74,8 +74,22 @@
   a { color: var(--d); }
   @media (max-width: 640px) {
     .wrap { padding: 12px; }
+    header { padding: 12px 14px; gap: 10px; }
     header h1 { font-size: 16px; }
+    header p { display: none; }             /* 좁은 화면에선 부제 숨김 */
     .card { padding: 14px; }
+    /* iOS 입력 포커스 시 자동 확대 방지(16px 미만이면 확대됨) */
+    input, textarea, select { font-size: 16px; }
+    .rtable input, .rtable select { font-size: 16px; }
+    /* 설정 폼은 한 줄에 하나로 — 좁은 화면 가독성 */
+    .grid.cols { grid-template-columns: 1fr 1fr; }
+    /* 주요 액션 버튼은 손가락으로 누르기 쉽게 넓게 */
+    #genBtn, #candBtn { flex: 1 1 100%; }
+    .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+    .tabs button { white-space: nowrap; }
+  }
+  @media (max-width: 380px) {
+    .grid.cols { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -214,7 +228,8 @@
             <input type="checkbox" id="onlyMine" style="width:auto" onchange="renderBoard()"> 내 근무만</label>
           <button class="sm ghost" onclick="validateEdits()" data-admin>🛡 대원칙 검사</button>
           <button class="sm" onclick="publishSchedule()" data-admin>📢 발행</button>
-          <button class="sm ghost" onclick="exportCSV()">⬇ CSV(엑셀)</button>
+          <button class="sm ghost" onclick="exportXLSX()">📊 엑셀(.xlsx)</button>
+          <button class="sm ghost" onclick="exportCSV()">⬇ CSV</button>
           <button class="sm ghost" onclick="exportPNG()">🖼 이미지</button>
         </div>
         <div id="pubMsg" class="hint" style="min-height:14px"></div>
@@ -482,7 +497,7 @@ function buildPayload() {
   const opMode = !!(document.getElementById("opMode") && document.getElementById("opMode").checked);
   const payload = {
     year: +year.value, month: +month.value, nurses, staffing, holidays,
-    team_min_staff: +teamMin.value, max_nights_per_month: +maxNights.value || null,
+    team_min_staff: +teamMin.value, max_nights_per_month: maxNights.value.trim()==="" ? null : +maxNights.value,
     max_consecutive_days: +maxCons.value, max_consecutive_nights: +maxNight.value,
     wanted, pre_assigned: pre, carry_over: carry,
     exact_mode: exactChk,
@@ -504,12 +519,23 @@ function buildPayload() {
 }
 function holidaysEl(){ return document.getElementById("holidays").value; }
 function parseWanted(byName) {
+  // 지원 형식: "이름,시작,종료,종류" / "이름,일,종류" / "이름,시작,종료" / "이름,일"
+  const SH = ["D","E","N","O"];
   const out = [];
   for (const line of document.getElementById("wanted").value.split("\n")) {
-    const p = line.split(",").map(s=>s.trim()); if (p.length<3||!byName[p[0]]) continue;
-    const s = parseInt(p[1],10)-1, e = parseInt(p[2],10)-1, sh = (p[3]||"O").toUpperCase();
-    if (isNaN(s)) continue;
-    out.push({ nurse_id: byName[p[0]], start_day: s, end_day: isNaN(e)?s:e, shift: ["D","E","N","O"].includes(sh)?sh:"O" });
+    const p = line.split(",").map(s=>s.trim());
+    if (p.length<2 || !byName[p[0]]) continue;
+    const s = parseInt(p[1],10)-1; if (isNaN(s)) continue;
+    let e = s, sh = "O";
+    const f2 = (p[2]||"").toUpperCase();
+    if (p.length>=4) {                       // 이름,시작,종료,종류
+      const pe = parseInt(p[2],10)-1; if (!isNaN(pe)) e = pe;
+      sh = (p[3]||"O").toUpperCase();
+    } else if (p.length===3) {
+      if (SH.includes(f2)) sh = f2;          // 이름,일,종류(D/E/N/O)
+      else { const pe = parseInt(p[2],10)-1; if (!isNaN(pe)) e = pe; }  // 이름,시작,종료
+    }
+    out.push({ nurse_id: byName[p[0]], start_day: s, end_day: e, shift: SH.includes(sh)?sh:"O" });
   }
   return out;
 }
@@ -543,9 +569,11 @@ async function generate() {
       headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(payload) });
     if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
     if (res.status === 403) throw new Error("생성 권한이 없습니다 (관리자·마스터 전용)");
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (res.status === 422) throw new Error("입력값 오류: " + JSON.stringify(data.detail).slice(0,200));
-    SCHED = { ...data, year: payload.year, month: payload.month,
+    if (!res.ok) throw new Error((data && data.detail ? JSON.stringify(data.detail).slice(0,200) : ("서버 오류 " + res.status)));
+    if (!data.schedules) throw new Error("근무표 응답이 올바르지 않습니다.");
+    SCHED = { ...data, year: payload.year, month: payload.month, holidays: payload.holidays||[],
       teams: Object.fromEntries(payload.nurses.map(n=>[n.name,n.team])),
       carry_over: payload.carry_over, nurseIds: Object.fromEntries(payload.nurses.map(n=>[n.name,n.id])) };
     store();
@@ -685,12 +713,14 @@ function renderBoard() {
     const c=r.counts||{};
     b += `<td class="tot">${c.D||0}</td><td class="tot">${c.E||0}</td><td class="tot">${c.N||0}</td><td class="tot">${c.M||0}</td><td class="tot">${c.O||0}</td></tr>`;
   }
-  // 교대별 일일 합계
-  const totLabels=[["D","D"],["E","E"],["N","N"],["M","M(액팅)"]];
-  for (const [k,lab] of totLabels){
-    b += `<tr class="totrow"><td class="name">Σ ${lab}</td>`;
-    for (let d=0; d<nd; d++){ let cnt=0; for (const s of SCHED.schedules){ const l=(s.labels&&s.labels[d])||s.shifts[d]; if (normCell(l)===k) cnt++; } b+=`<td>${cnt}</td>`; }
-    b += "<td></td><td></td><td></td><td></td><td></td></tr>";
+  // 교대별 일일 합계(병동 전체). "내 근무만" 필터 시엔 개인 뷰이므로 생략.
+  if (!document.getElementById("onlyMine").checked) {
+    const totLabels=[["D","D"],["E","E"],["N","N"],["M","M(액팅)"]];
+    for (const [k,lab] of totLabels){
+      b += `<tr class="totrow"><td class="name">Σ ${lab}</td>`;
+      for (let d=0; d<nd; d++){ let cnt=0; for (const s of SCHED.schedules){ const l=(s.labels&&s.labels[d])||s.shifts[d]; if (normCell(l)===k) cnt++; } b+=`<td>${cnt}</td>`; }
+      b += "<td></td><td></td><td></td><td></td><td></td></tr>";
+    }
   }
   b += "</tbody>";
   document.getElementById("schedTable").innerHTML = h + b;
@@ -883,8 +913,9 @@ async function loadApprovals() {
       '</tbody></table></div>';
     // 신청 기간 인풋 채우기
     const w = await api("GET", `/api/request-window/${y}/${m}`);
-    if (w.opens_at) winOpen.value = toLocalInput(w.opens_at);
-    if (w.closes_at) winClose.value = toLocalInput(w.closes_at);
+    // 항상 재설정(월 전환 시 이전 월 값이 남아 잘못 저장되는 것 방지)
+    winOpen.value = w.opens_at ? toLocalInput(w.opens_at) : "";
+    winClose.value = w.closes_at ? toLocalInput(w.closes_at) : "";
     winNote.value = w.note || "";
   } catch (e) { el.innerHTML = `<span class="muted">불러오기 실패: ${esc(e.message)}</span>`; }
 }
@@ -923,6 +954,22 @@ async function loadInbox() {
 async function markRead(id) { try { await api("POST", `/api/feedback/${id}/read`); await loadInbox(); } catch (e) {} }
 
 /* ============================ 내보내기 ============================ */
+async function exportXLSX(){
+  if (!SCHED) return;
+  const payload = {
+    year: SCHED.year||null, month: SCHED.month||null, num_days: SCHED.num_days,
+    holidays: SCHED.holidays||[], teams: SCHED.teams||{},
+    schedules: SCHED.schedules.map(s=>({ name:s.name, labels:(s.labels||s.shifts), counts:s.counts||{} })),
+    title: (SCHED.year&&SCHED.month) ? `61병동 ${SCHED.year}년 ${SCHED.month}월 근무표` : "근무표",
+  };
+  try {
+    const res = await fetch("/api/schedule/export.xlsx", { method:"POST",
+      headers:{ "Content-Type":"application/json", ...authHeaders() }, body:JSON.stringify(payload) });
+    if (res.status===401){ showAuth(true); return; }
+    if (!res.ok) throw new Error("엑셀 생성 실패 ("+res.status+")");
+    dl(await res.blob(), `duty_${SCHED.year||""}_${SCHED.month||""}.xlsx`);
+  } catch(e){ alert("엑셀 내보내기 실패: " + e.message); }
+}
 function exportCSV(){
   if (!SCHED) return;
   const nd=SCHED.num_days; let lines=[];
