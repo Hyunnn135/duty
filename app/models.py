@@ -305,6 +305,14 @@ class ScheduleRequest(BaseModel):
         8, ge=0, description="나이트 블록 사이를 오프만으로 잇는 것(N-오프…오프-N) 지양 — "
         "다음 나이트 전에 데이/이브를 거치도록 유도(휴식 텀 확보).",
     )
+    weight_acting_day: int = Field(
+        0, ge=0, description="daily_patterns에 액팅(M) 포함 패턴이 있을 때, 액팅이 없는 날에 주는 소폭 "
+        "페널티 → 액팅 근무일을 소폭 우대(오프 하드 밴드 안에서 자연스럽게 A/B 혼합). 0이면 비활성.",
+    )
+    acting_days: int | None = Field(
+        None, ge=0, description="daily_patterns 사용 시, 액팅(M) 포함 패턴을 쓰는 날 수를 이 값으로 "
+        "'정확히' 하드 고정(A/B 혼합 비율 제어). None이면 미지정(weight_acting_day 소프트만 적용).",
+    )
     num_workers: int = Field(8, ge=1, le=32, description="CP-SAT 병렬 워커 수. 1로 두면 결정적(재현 가능) 탐색")
 
     # ---- 검증 ----

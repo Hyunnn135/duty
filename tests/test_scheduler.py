@@ -424,6 +424,21 @@ def test_daily_patterns_exact_counts():
         assert tup in {(2, 2, 2, 1), (3, 3, 2, 0)}, f"day{d}: {tup}"
 
 
+def test_acting_days_hard_count():
+    """acting_days: 액팅(M) 포함 패턴을 쓰는 날 수를 정확히 고정한다."""
+    pats = [{"D": 2, "E": 2, "N": 2, "M": 1}, {"D": 3, "E": 3, "N": 2, "M": 0}]
+    req = ScheduleRequest(num_days=10, nurses=_nurses(10), daily_patterns=pats,
+                          acting_days=3, time_limit_seconds=15)
+    res = solve(req)
+    assert res.feasible
+    act = 0
+    for d in range(10):
+        has_m = sum(1 for s in res.schedules if s.shifts[d].value == "M")
+        if has_m:
+            act += 1
+    assert act == 3
+
+
 def _short_night_returns(r):
     """짧은 텀(1~3일)을 오프만으로 잇고 나이트로 복귀(N-오프…오프-N)한 횟수 = 페널티 대상."""
     bad = 0
