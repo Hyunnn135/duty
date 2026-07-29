@@ -264,10 +264,14 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         if not nurse.is_trainee or not nurse.trainer_id or nurse.trainer_id not in idx:
             continue
         t = idx[nurse.trainer_id]
+        # 트레이닝 신규가 나이트 불가면 나이트는 미러링에서 제외(교육자가 나이트인 날
+        # 강제 동행 시 나이트 금지와 충돌해 전체 INFEASIBLE이 되는 것을 방지).
+        mirror_shifts = ALL_SHIFTS if nurse.night_eligible else [
+            s for s in ALL_SHIFTS if s != Shift.NIGHT]
         for d in days:
             if d in preassigned_days.get(j, set()):
                 continue
-            for s in ALL_SHIFTS:
+            for s in mirror_shifts:
                 model.add(x[j, d, s] == x[t, d, s])
 
     # (12) T6a: 단일(고립) 나이트 금지 — 나이트 블록 ≥ 2 (실측: 단일 N 0건)
@@ -300,18 +304,25 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     lo = req.night_min_per_nurse
     hi = req.night_max_per_nurse
     if req.exact_mode and lo is None and hi is None:
-        total_n = 0
+        # 패턴별 N이 다를 수 있으므로 하한은 최소-N 합, 상한은 최대-N 합으로 밴드를 잡아
+        # (균일-N이면 동일) 이질적 패턴에서 밴드가 과도하게 좁아 INFEASIBLE 되는 것을 방지.
+        total_n_lo = 0
+        total_n_hi = 0
         for d in days:
             if req.daily_patterns:
-                total_n += min(int(p.get("N", 0)) for p in req.daily_patterns)
+                ns = [int(p.get("N", 0)) for p in req.daily_patterns]
+                total_n_lo += min(ns)
+                total_n_hi += max(ns)
             else:
                 st = req.staffing_for(d)
-                total_n += st.of(Shift.NIGHT).min if st is not None else req.min_staff.get(Shift.NIGHT)
+                need = st.of(Shift.NIGHT).min if st is not None else req.min_staff.get(Shift.NIGHT)
+                total_n_lo += need
+                total_n_hi += need
         elig = sum(1 for nu in nurses if nu.night_eligible)
-        if elig > 0 and total_n > 0:
+        if elig > 0 and total_n_hi > 0:
             import math as _math
-            lo = _math.floor(total_n / elig)
-            hi = _math.ceil(total_n / elig)
+            lo = _math.floor(total_n_lo / elig)
+            hi = _math.ceil(total_n_hi / elig)
             if lo == hi:  # 폭 0이면 살짝 넓혀 실현 가능성 확보
                 hi = lo + 1
     if lo is not None or hi is not None:
@@ -328,18 +339,20 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
     #   합-편차 최소화(offcount 소프트)는 "1명 14 + 3명 12"와 "6명 12"를 구분하지 못해 특정
     #   인원에게 오프가 몰릴 수 있다. 하드 밴드로 전원 11~12 같은 균등 분포를 보장한다.
     if req.exact_mode:
-        _T = req.default_off_target()
-        if _T is not None:
-            for i, nurse in enumerate(nurses):
-                if nurse.is_trainee:
-                    continue
-                pre = preassigned_days.get(i, set())
-                pure_off = [x[i, d, Shift.OFF] for d in days if d not in pre]
-                if not pure_off:
-                    continue
-                off_i = sum(pure_off)
-                model.add(off_i >= _T)
-                model.add(off_i <= _T + 1)
+        for i, nurse in enumerate(nurses):
+            if nurse.is_trainee:
+                continue
+            # 인당 목표(off_count_target 우선, 없으면 달력 기본) — 소프트 항과 동일 기준 사용.
+            _T = req.off_target_for(nurse.id)
+            if _T is None:
+                continue
+            pre = preassigned_days.get(i, set())
+            pure_off = [x[i, d, Shift.OFF] for d in days if d not in pre]
+            if not pure_off:
+                continue
+            off_i = sum(pure_off)
+            model.add(off_i >= _T)
+            model.add(off_i <= _T + 1)
 
     # (13c) D·E·N 균형: 각 간호사에게 데이/이브닝/나이트가 한쪽으로 쏠리지 않게.
     #   - 하드: 세 근무의 개수 격차 ≤ max_shift_spread (exact_mode면 기본 3 자동)
@@ -741,8 +754,13 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             # 품질(1차 목적)이 primary_max로 이미 하드 고정됨 → 타이브레이커만 최소화(빠름·정확)
             obj_expr = tb
         else:
-            # 단일 solve 사전식(느릴 수 있음): 품질을 큰 배수로 우선
-            obj_expr = _TIEBREAK_BIG * (sum(objective) if objective else 0) + tb
+            # 단일 solve 사전식(느릴 수 있음): 품질을 큰 배수로 우선.
+            #   배수는 tb의 이론적 최댓값보다 커야 사전식(1차 품질 우선)이 보장된다.
+            #   하루 한 근무이므로 (i,d)당 최대 기여는 wgt*max_ord → 합의 상한이 tb 최댓값.
+            max_ord = max(TIEBREAK_ORDER.values()) if TIEBREAK_ORDER else 1
+            tb_max = sum(i * nd + d + 1 for i in range(N) for d in days) * max_ord
+            big = tb_max + 1
+            obj_expr = big * (sum(objective) if objective else 0) + tb
 
     # (실험) 1차 목적(품질) 상한 — 2단계 사전식 풀이: 품질을 최적값으로 고정 후 타이브레이크만
     if req.primary_max is not None and objective:

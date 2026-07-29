@@ -96,3 +96,35 @@ def test_carry_over_validation():
 def test_nurse_defaults_backward_compatible():
     n = Nurse(id="a", name="가")
     assert n.team == 1 and n.night_eligible and not n.is_new
+
+
+def test_pre_assigned_unknown_id_rejected():
+    """오타 등으로 명단에 없는 id면 하드 제약(연차)이 조용히 누락되므로 거부."""
+    with pytest.raises(ValueError):
+        ScheduleRequest(
+            num_days=7, nurses=_nurses(3),
+            pre_assigned=[PreAssigned(nurse_id="n0 ", day=2, code="HY")],
+        )
+
+
+def test_wanted_unknown_id_rejected():
+    with pytest.raises(ValueError):
+        ScheduleRequest(
+            num_days=7, nurses=_nurses(3),
+            wanted=[WantedRequest(nurse_id="ghost", start_day=1)],
+        )
+
+
+def test_acting_days_without_m_pattern_rejected():
+    """acting_days는 M 패턴이 있어야만 의미가 있으므로, 없으면 거부."""
+    with pytest.raises(ValueError):
+        ScheduleRequest(
+            num_days=7, nurses=_nurses(6), acting_days=2,
+            daily_patterns=[{"D": 2, "E": 2, "N": 2, "M": 0}],
+        )
+    # M 패턴이 있으면 정상 허용
+    req = ScheduleRequest(
+        num_days=7, nurses=_nurses(6), acting_days=2,
+        daily_patterns=[{"D": 2, "E": 2, "N": 1, "M": 1}, {"D": 3, "E": 2, "N": 1, "M": 0}],
+    )
+    assert req.acting_days == 2

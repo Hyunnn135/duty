@@ -27,11 +27,29 @@ TOKEN_TTL_SECONDS = 12 * 3600
 _ALGO = "HS256"
 
 
+_EPHEMERAL_SECRET: str | None = None
+
+
 def _secret() -> str:
+    """JWT 서명 키. 프로덕션은 DUTY_SECRET(Secret Manager)를 반드시 설정한다.
+
+    미설정 시 고정 상수 대신 **프로세스마다 무작위 키**를 생성해 쓴다(소스에 박힌
+    상수 키로 인한 토큰 위조를 원천 차단). 단점: 재시작 시 기존 토큰 무효화(재로그인)
+    → 로컬/개발용으로만 적합하므로 배포에서는 반드시 DUTY_SECRET을 준다.
+    """
     s = os.environ.get("DUTY_SECRET")
-    if not s:
-        s = "dev-secret-change-me"  # 배포 시 반드시 환경 변수로 교체
-    return s
+    if s:
+        return s
+    global _EPHEMERAL_SECRET
+    if _EPHEMERAL_SECRET is None:
+        import warnings
+        _EPHEMERAL_SECRET = secrets.token_urlsafe(48)
+        warnings.warn(
+            "DUTY_SECRET 미설정 — 임시 무작위 서명 키 사용(재시작 시 재로그인 필요). "
+            "배포에서는 반드시 DUTY_SECRET을 설정하세요.",
+            RuntimeWarning, stacklevel=2,
+        )
+    return _EPHEMERAL_SECRET
 
 
 def _db_path() -> str:
@@ -131,8 +149,11 @@ def get_current_user(
         raise HTTPException(401, "로그인이 만료되었습니다. 다시 로그인해 주세요.")
     except jwt.InvalidTokenError:
         raise HTTPException(401, "유효하지 않은 토큰입니다.")
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(401, "유효하지 않은 토큰입니다.")
     return UserInfo(
-        email=payload["sub"], name=payload.get("name", ""),
+        email=sub, name=payload.get("name", ""),
         role=payload.get("role", "staff"), ward=payload.get("ward", ""),
     )
 

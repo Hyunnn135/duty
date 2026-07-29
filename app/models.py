@@ -353,9 +353,18 @@ class ScheduleRequest(BaseModel):
         for p in self.pre_assigned:
             if p.day >= nd:
                 raise ValueError(f"pre_assigned day {p.day} 가 기간({nd}일)을 벗어납니다.")
+            if p.nurse_id not in ids:
+                raise ValueError(
+                    f"pre_assigned의 간호사 id '{p.nurse_id}' 가 명단에 없습니다 "
+                    f"(오타 시 연차 등 하드 제약이 조용히 누락됩니다).")
         for w in self.wanted:
             if w.start_day >= nd or (w.end_day is not None and w.end_day >= nd):
                 raise ValueError("wanted 기간이 배정 기간을 벗어납니다.")
+            if w.nurse_id not in ids:
+                raise ValueError(f"wanted의 간호사 id '{w.nurse_id}' 가 명단에 없습니다.")
+        for r in self.requests:
+            if r.nurse_id not in ids:
+                raise ValueError(f"requests의 간호사 id '{r.nurse_id}' 가 명단에 없습니다.")
         for nid in self.carry_over:
             if nid not in ids:
                 raise ValueError(f"carry_over의 간호사 id '{nid}' 가 명단에 없습니다.")
@@ -368,6 +377,13 @@ class ScheduleRequest(BaseModel):
             for nid in self.off_count_target:
                 if nid not in ids:
                     raise ValueError(f"off_count_target의 간호사 id '{nid}' 가 명단에 없습니다.")
+        if self.acting_days is not None:
+            has_m = bool(self.daily_patterns) and any(
+                int(p.get("M", 0)) > 0 for p in self.daily_patterns)
+            if not has_m:
+                raise ValueError(
+                    "acting_days는 daily_patterns에 액팅(M>0) 패턴이 있을 때만 쓸 수 있습니다 "
+                    "(그렇지 않으면 조용히 무시됩니다).")
         return self
 
     # ---- 달력 도우미 ----

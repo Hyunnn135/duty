@@ -347,6 +347,28 @@ def test_trainee_requires_trainer():
         )
 
 
+def test_nonnight_trainee_with_night_trainer_feasible():
+    """나이트 불가 트레이니 + 나이트 근무하는 교육자여도 INFEASIBLE 되지 않는다.
+
+    나이트는 미러링에서 제외되어(트레이니 나이트 금지와 충돌 회피) 전체 해가 살아있어야 한다.
+    """
+    ms = MinStaff(D=2, E=2, N=1)  # 매일 나이트 1명 필요 → 누군가는 나이트
+    nurses = _nurses(9)
+    # 트레이니(n8)는 나이트 불가, 교육자는 n0
+    nurses[8] = Nurse(id="n8", name="신규", is_trainee=True, trainer_id="n0",
+                      night_eligible=False)
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms)
+    res = solve(req)
+    assert res.feasible
+    by = {s.nurse_id: s for s in res.schedules}
+    # 트레이니는 절대 나이트를 하지 않는다
+    assert all(by["n8"].shifts[d] != Shift.NIGHT for d in range(7))
+    # 교육자가 나이트인 날엔 트레이니는 (나이트 대신) 오프 등으로 빠진다 — 나이트만 아니면 OK
+    for d in range(7):
+        if by["n0"].shifts[d] == Shift.NIGHT:
+            assert by["n8"].shifts[d] != Shift.NIGHT
+
+
 def test_team_wanted_off_no_overlap():
     """E4: 같은 팀 원티드 오프는 같은 날 겹치지 않는다."""
     from app.models import WantedRequest

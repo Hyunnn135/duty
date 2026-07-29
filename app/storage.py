@@ -66,6 +66,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_bound(s: str | None, *, end_of_day: bool) -> datetime | None:
+    """신청기간 경계값을 tz-aware datetime으로 파싱(문자열 사전식 비교 버그 방지).
+
+    - 날짜만("2026-08-10") 오면 opens는 자정, closes는 그날 끝(23:59:59)으로 보정
+      → 마감일 하루 종일 열려 있도록.
+    - 시간대 없는 값은 UTC로 간주(_now()와 일관). 파싱 실패 시 None(경계 없음).
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        if len(s) == 10 and s.count("-") == 2:  # 날짜만
+            dt = datetime.fromisoformat(s)
+            if end_of_day:
+                dt = dt.replace(hour=23, minute=59, second=59)
+        else:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
@@ -371,10 +395,12 @@ def _window_open(conn: sqlite3.Connection, ward: str, year: int, month: int) -> 
     ).fetchone()
     if row is None:
         return True, ""  # 윈도우 미설정 = 항상 열림
-    now = _now()
-    if row["opens_at"] and now < row["opens_at"]:
+    now = datetime.now(timezone.utc)
+    opens = _parse_bound(row["opens_at"], end_of_day=False)
+    closes = _parse_bound(row["closes_at"], end_of_day=True)
+    if opens is not None and now < opens:
         return False, "아직 신청 기간이 시작되지 않았습니다."
-    if row["closes_at"] and now > row["closes_at"]:
+    if closes is not None and now > closes:
         return False, EXPIRED_MSG
     return True, ""
 
