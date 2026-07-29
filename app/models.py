@@ -289,6 +289,13 @@ class ScheduleRequest(BaseModel):
         description="정확 최적 모드: 나이트 공정성을 자동 하드 밴드로 옮기고 편차 목적을 제거해 "
         "'proven OPTIMAL'(최적 증명)을 얻는다. 다소 느리지만 최고 품질을 보장(권장 #2).",
     )
+    max_shift_spread: int | None = Field(
+        None, ge=0, description="각 간호사의 D·E·N 개수 최대 격차(하드). 예: 3이면 데이/이브/"
+        "나이트가 서로 3개 이내로 균형. 미지정+exact_mode면 3 자동.",
+    )
+    weight_shift_balance: int = Field(
+        6, ge=0, description="각 간호사의 데이·이브닝 개수 차이 페널티(소프트) — 한쪽으로 쏠림 방지.",
+    )
     num_workers: int = Field(8, ge=1, le=32, description="CP-SAT 병렬 워커 수. 1로 두면 결정적(재현 가능) 탐색")
 
     # ---- 검증 ----
