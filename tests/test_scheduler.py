@@ -405,3 +405,49 @@ def test_exact_mode_night_band_fairness():
     assert res.feasible
     nights = [s.counts.get("N", 0) for s in res.schedules]
     assert max(nights) - min(nights) <= 1   # 자동 밴드 [2,3] → 폭 1
+
+
+def test_daily_patterns_exact_counts():
+    """daily_patterns: 매일 인원이 허용 패턴과 '정확' 일치(초과·미달 불가)."""
+    pats = [{"D": 2, "E": 2, "N": 2, "M": 1}, {"D": 3, "E": 3, "N": 2, "M": 0}]
+    req = ScheduleRequest(num_days=10, nurses=_nurses(10), daily_patterns=pats,
+                          time_limit_seconds=15)
+    res = solve(req)
+    assert res.feasible
+    for d in range(10):
+        cnt = {"D": 0, "E": 0, "N": 0, "M": 0}
+        for s in res.schedules:
+            v = s.shifts[d].value
+            if v in cnt:
+                cnt[v] += 1
+        tup = (cnt["D"], cnt["E"], cnt["N"], cnt["M"])
+        assert tup in {(2, 2, 2, 1), (3, 3, 2, 0)}, f"day{d}: {tup}"
+
+
+def _short_night_returns(r):
+    """짧은 텀(1~3일)을 오프만으로 잇고 나이트로 복귀(N-오프…오프-N)한 횟수 = 페널티 대상."""
+    bad = 0
+    for s in r.schedules:
+        v = [x.value for x in s.shifts]
+        for i in range(len(v)):
+            if v[i] != "N":
+                continue
+            for g in (1, 2, 3):
+                e = i + g + 1
+                if e < len(v) and v[e] == "N" and all(v[i + k] == "O" for k in range(1, g + 1)):
+                    bad += 1
+    return bad
+
+
+def test_night_gap_avoids_short_night_returns():
+    """weight_night_gap_work를 켜면 여유 있는 편성에서 짧은-텀 나이트 복귀(N-오프-N)가 사라진다.
+
+    결정적(단일 워커+시드) 편성으로 재현 가능하게 검증한다.
+    """
+    base = dict(num_days=10, nurses=_nurses(8), min_staff=MinStaff(D=1, E=1, N=1),
+                max_consecutive_nights=3, time_limit_seconds=15,
+                num_workers=1, random_seed=7)
+    on = solve(ScheduleRequest(**base, weight_night_gap_work=300))
+    assert on.feasible
+    # 중간에 데이/이브닝 근무 없이 오프만 하고 나이트로 복귀하는 짧은 텀이 없어야 한다
+    assert _short_night_returns(on) == 0

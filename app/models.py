@@ -193,6 +193,11 @@ class ScheduleRequest(BaseModel):
     staffing: dict[str, DayStaffing] | None = Field(
         None, description='요일별 기준 {"weekday":…, "weekend":…, "holiday":…}'
     )
+    daily_patterns: list[dict[str, int]] | None = Field(
+        None,
+        description="허용 일별 '정확' 인원 패턴 목록(각 {D,E,N,M}). 지정 시 매일 정확히 한 "
+        "패턴과 일치해야 하며 초과·미달 불가. 예: [{D:4,E:4,N:4,M:1},{D:5,E:5,N:4,M:0}].",
+    )
     holidays: list[int] = Field(
         default_factory=list, description="공휴일 (1부터 시작하는 날짜 번호)"
     )
@@ -295,6 +300,10 @@ class ScheduleRequest(BaseModel):
     )
     weight_shift_balance: int = Field(
         6, ge=0, description="각 간호사의 데이·이브닝 개수 차이 페널티(소프트) — 한쪽으로 쏠림 방지.",
+    )
+    weight_night_gap_work: int = Field(
+        8, ge=0, description="나이트 블록 사이를 오프만으로 잇는 것(N-오프…오프-N) 지양 — "
+        "다음 나이트 전에 데이/이브를 거치도록 유도(휴식 텀 확보).",
     )
     num_workers: int = Field(8, ge=1, le=32, description="CP-SAT 병렬 워커 수. 1로 두면 결정적(재현 가능) 탐색")
 
