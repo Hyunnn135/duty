@@ -25,12 +25,22 @@ from email.message import EmailMessage
 log = logging.getLogger("duty.email")
 
 
+def _port() -> int:
+    """SMTP_PORT를 안전하게 파싱. 비정상 값이면 기본 587로 폴백(예외 전파 방지)."""
+    raw = (os.environ.get("SMTP_PORT", "") or "").strip()
+    try:
+        return int(raw) if raw else 587
+    except ValueError:
+        log.warning("SMTP_PORT 값이 올바르지 않음(%r) — 587로 폴백", raw)
+        return 587
+
+
 def _cfg() -> dict:
     host = os.environ.get("SMTP_HOST", "").strip()
     user = os.environ.get("SMTP_USER", "").strip()
     return {
         "host": host,
-        "port": int(os.environ.get("SMTP_PORT", "587") or "587"),
+        "port": _port(),
         "user": user,
         "password": os.environ.get("SMTP_PASSWORD", ""),
         "from": (os.environ.get("SMTP_FROM", "").strip() or user),
