@@ -295,6 +295,35 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             if hi is not None:
                 model.add(tot <= hi)
 
+    # (13c) D·E·N 균형: 각 간호사에게 데이/이브닝/나이트가 한쪽으로 쏠리지 않게.
+    #   - 하드: 세 근무의 개수 격차 ≤ max_shift_spread (exact_mode면 기본 3 자동)
+    #   - 소프트: |D-E| 페널티(비-exact 모드). 트레이닝 신규는 교육자를 따라가므로 제외.
+    balance_terms: list = []
+    eff_spread = req.max_shift_spread
+    if req.exact_mode and eff_spread is None:
+        eff_spread = 3
+    want_soft_bal = req.weight_shift_balance > 0 and not req.exact_mode
+    if eff_spread is not None or want_soft_bal:
+        for i, nurse in enumerate(nurses):
+            if req.exclude_trainee_from_staffing and nurse.is_trainee:
+                continue
+            dc = model.new_int_var(0, nd, f"dcnt_{i}")
+            ec = model.new_int_var(0, nd, f"ecnt_{i}")
+            nc = model.new_int_var(0, nd, f"ncnt_{i}")
+            model.add(dc == sum(x[i, d, Shift.DAY] for d in days))
+            model.add(ec == sum(x[i, d, Shift.EVENING] for d in days))
+            model.add(nc == sum(x[i, d, Shift.NIGHT] for d in days))
+            if eff_spread is not None:
+                pairs = [(dc, ec), (dc, nc), (ec, nc)] if nurse.night_eligible else [(dc, ec)]
+                for a, b in pairs:
+                    model.add(a - b <= eff_spread)
+                    model.add(b - a <= eff_spread)
+            if want_soft_bal:
+                diff = model.new_int_var(0, nd, f"debal_{i}")
+                model.add(diff >= dc - ec)
+                model.add(diff >= ec - dc)
+                balance_terms.append(diff)
+
     # (8a) 사전 배정 (연차 등): 해당 날 OFF로 하드 고정, 표시 라벨은 코드
     label_override: dict[tuple[int, int], str] = {}
     for p in req.pre_assigned:
@@ -620,6 +649,8 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_long_block * sum(longblock_terms))
     if weekendfair_terms:
         objective.append(req.weight_weekend_fair * sum(weekendfair_terms))
+    if balance_terms:
+        objective.append(req.weight_shift_balance * sum(balance_terms))
     # 결정적 타이브레이커(선택): 동일 품질(1차 목적) 해가 여럿일 때 유일해로 수렴시키기 위해
     #   1차 목적을 큰 배수로 우선(사전식), 그 아래 셀 위치·교대 순서로 정해진 미세 비용을 더한다.
     #   → '인위적'이지만 재현·수렴을 위한 결정적 규칙 (PLAN·보고서에 명시).
