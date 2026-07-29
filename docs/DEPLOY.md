@@ -196,7 +196,7 @@ gcloud secrets add-iam-policy-binding smtp-password \
 ```bash
 gcloud run deploy "$SERVICE" --source . --region "$REGION" \
   --allow-unauthenticated --execution-environment gen2 \
-  --cpu 2 --memory 2Gi --concurrency 8 --timeout 300 --min-instances 1 --max-instances 1 \
+  --cpu 2 --memory 2Gi --concurrency 8 --timeout 300 --min-instances 0 --max-instances 1 \
   --set-env-vars DUTY_DB=/data/duty.db \
   --set-secrets DUTY_SECRET=duty-secret:latest \
   --add-volume name=data,type=cloud-storage,bucket="$BUCKET" \
@@ -218,13 +218,16 @@ docker run --rm -p 8080:8080 -e DUTY_SECRET=devsecret -e DUTY_DB=/data/duty.db d
 
 ## 운영 메모
 
-- **콜드스타트**: OR-Tools 임포트로 최초 기동 ~8초. `--min-instances 1`로 상시 1대를
-  띄워 콜드스타트와 SQLite 단일 인스턴스 일관성을 동시에 해결한다.
+- **비용(중요)**: 기본값을 **`--min-instances 0`(scale-to-zero)** 로 둔다. 한 병동이 월 몇 번
+  생성하는 저트래픽에서는 안 쓸 때 인스턴스가 0으로 내려가 **사실상 무료**(Cloud Run 무료 티어
+  vCPU-s·GiB-s·요청 범위 내). GCS·시크릿·빌드도 무료 티어. 정확한 비용은 GCP 요금 계산기로 확인.
+- **콜드스타트 트레이드오프**: scale-to-zero면 오래 안 쓰다 첫 요청 시 OR-Tools 임포트로 **~8~10초**
+  대기가 생긴다. 월 단위로 쓰는 도구라 보통 감수 가능. **항상 즉시 응답이 필요하면**
+  `--min-instances 1`로 바꾼다(단, 인스턴스 상시 과금 → 월 $30~45 수준). 항상 켤 땐 SQLite
+  단일 인스턴스 일관성도 함께 확보된다(scale-to-zero도 `--max-instances 1`이라 동시 쓰기는 없음).
 - **동시성·타임아웃**: 근무표 생성은 CPU를 많이 쓰므로 `--concurrency 8`, `--cpu 2`로 제한.
   운영 모드(정확 인원 패턴) 생성은 최대 120초 계산하므로 요청 타임아웃을 `--timeout 300`으로
   여유를 둔다(콜드스타트 ~8초 + 계산 120초 + 여유). 메모리는 OR-Tools 대규모 풀이를 위해 `2Gi`.
-- **비용**: 단일 인스턴스 상시 가동 + 소규모 트래픽 기준 월 소액(수 달러 내외). GCS·시크릿·
-  빌드도 무료 티어 범위 내. 정확한 비용은 GCP 요금 계산기로 확인.
 
 ## 확장(Postgres 이관) 경로 — 사용자·병동이 늘면
 
