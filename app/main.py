@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .alternatives import AlternativesRequest, AlternativesResponse, generate
 from .auth import UserInfo, get_current_user, require_roles, router as auth_router
+from .export_xlsx import ExportRequest, build_xlsx
 from .models import CandidatesResponse, ScheduleRequest, ScheduleResponse
 from .rules_check import ValidateRequest, ValidateResponse, check
 from .scheduler import solve, solve_candidates
@@ -66,6 +67,23 @@ def create_candidates(
            else (cands[0].message if cands else "생성 실패"))
     return CandidatesResponse(feasible=feasible, count=len(real),
                               candidates=real if feasible else cands, message=msg)
+
+
+@app.post("/api/schedule/export.xlsx")
+def export_schedule_xlsx(
+    req: ExportRequest,
+    _user: Annotated[UserInfo, Depends(get_current_user)],
+) -> Response:
+    """근무표를 엑셀(.xlsx) 파일로 변환해 반환한다 (로그인 사용자)."""
+    data = build_xlsx(req)
+    fname = "duty.xlsx"
+    if req.year and req.month:
+        fname = f"duty_{req.year}-{req.month:02d}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.post("/api/validate", response_model=ValidateResponse)
