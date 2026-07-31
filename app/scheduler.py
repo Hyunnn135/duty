@@ -510,6 +510,30 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 )
                 isolated_terms.append(b)
 
+    # (소프트) 오프 페어링: 오프 한 개만 끼는 것(근무-오프-근무) 지양 → 가급적 2개씩.
+    pairoff_terms: list = []
+    if req.weight_paired_off > 0:
+        for i in range(N):
+            for d in range(1, nd - 1):
+                b = model.new_bool_var(f"isooff_{i}_{d}")
+                model.add(
+                    b >= work[i, d - 1] + x[i, d, Shift.OFF] + work[i, d + 1] - 2
+                )
+                pairoff_terms.append(b)
+
+    # (소프트) 긴 텀(≥4일 연속근무) 직후 오프 1개만 지양 → 오프 2개 강하게 우대.
+    #   4일 연속근무(d-3..d) 뒤 d+1 오프인데 d+2 다시 근무면 페널티(고립오프와 중첩되어 더 큼).
+    longoff_terms: list = []
+    if req.weight_paired_off_after_long > 0:
+        for i in range(N):
+            for d in range(3, nd - 2):
+                b = model.new_bool_var(f"longoff_{i}_{d}")
+                model.add(
+                    b >= work[i, d - 3] + work[i, d - 2] + work[i, d - 1] + work[i, d]
+                    + x[i, d + 1, Shift.OFF] + work[i, d + 2] - 5
+                )
+                longoff_terms.append(b)
+
     # (소프트) T11b: E-OFF-D 감점 (지양하되 허용, 실측 1인 월 ≤1건 수준)
     eod_terms: list = []
     if req.weight_eod > 0:
@@ -707,6 +731,10 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         objective.append(req.weight_target_staff * sum(target_terms))
     if isolated_terms:
         objective.append(req.weight_isolated_work * sum(isolated_terms))
+    if pairoff_terms:
+        objective.append(req.weight_paired_off * sum(pairoff_terms))
+    if longoff_terms:
+        objective.append(req.weight_paired_off_after_long * sum(longoff_terms))
     if eod_terms:
         objective.append(req.weight_eod * sum(eod_terms))
     if softtrans_terms:

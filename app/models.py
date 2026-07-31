@@ -309,6 +309,14 @@ class ScheduleRequest(BaseModel):
         0, ge=0, description="daily_patterns에 액팅(M) 포함 패턴이 있을 때, 액팅이 없는 날에 주는 소폭 "
         "페널티 → 액팅 근무일을 소폭 우대(오프 하드 밴드 안에서 자연스럽게 A/B 혼합). 0이면 비활성.",
     )
+    weight_paired_off: int = Field(
+        6, ge=0, description="오프가 한 개만 끼는 것(근무-오프-근무, 고립 오프) 지양 — 가급적 오프를 "
+        "2개씩 붙여 피로를 줄인다(소프트).",
+    )
+    weight_paired_off_after_long: int = Field(
+        12, ge=0, description="4일 이상 연속 근무 텀 직후에 오프가 1개만 오는 것 강하게 지양 — "
+        "긴 텀 뒤에는 오프 2개를 우대(소프트, 일반 고립오프보다 큰 가중).",
+    )
     acting_days: int | None = Field(
         None, ge=0, description="daily_patterns 사용 시, 액팅(M) 포함 패턴을 쓰는 날 수를 이 값으로 "
         "'정확히' 하드 고정(A/B 혼합 비율 제어). None이면 미지정(weight_acting_day 소프트만 적용).",
