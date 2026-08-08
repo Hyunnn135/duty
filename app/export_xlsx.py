@@ -50,7 +50,8 @@ def build_xlsx(req: ExportRequest) -> bytes:
         return (fw + day0) % 7 >= 5 or (day0 + 1) in hol
 
     teams = req.teams
-    rows = sorted(req.schedules, key=lambda s: (teams.get(s.name, 9), s.name))
+    # 팀 순으로만 정렬(안정 정렬) — 팀 내에서는 보낸 순서(명단=경력순)를 유지해 화면과 일치.
+    rows = sorted(req.schedules, key=lambda s: teams.get(s.name, 9))
 
     wb = Workbook()
     ws = wb.active

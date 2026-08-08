@@ -474,7 +474,30 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&
 /* ============================ 생성 ============================ */
 let SCHED = null; // {schedules:[{name,shifts,labels,counts}], num_days, year, month, ...}
 function nid(i) { return "n" + i; }
-function buildPayload() {
+// 신청관리에서 '승인'된 웹 원티드를 생성 페이로드에 자동 반영 (USER_GUIDE 2-B).
+// 계정 이메일 → 명단 이름으로 연결하고, 없으면 신청자 표시 이름으로 매칭한다.
+async function fetchApprovedWanted(byName, y, m) {
+  try {
+    const list = await api("GET", `/api/wanted?year=${y}&month=${m}`);
+    const nd = new Date(y, m, 0).getDate();
+    const byAccount = {};
+    for (const r of roster) {
+      const acc = (r.account || "").trim().toLowerCase();
+      if (acc && r.name.trim()) byAccount[acc] = r.name.trim();
+    }
+    const out = [];
+    for (const w of (list || [])) {
+      if (w.status !== "approved") continue;
+      const name = byAccount[(w.nurse_email || "").toLowerCase()] || w.nurse_name;
+      const id = byName[name];
+      if (!id || w.start_day > nd) continue;
+      out.push({ nurse_id: id, start_day: w.start_day - 1, end_day: Math.min(w.end_day, nd) - 1,
+        shift: ["D","E","N","O"].includes(w.shift) ? w.shift : "O" });
+    }
+    return out;
+  } catch (e) { return []; }  // 서버 미가용 시 텍스트 입력분만 사용
+}
+async function buildPayload() {
   const nurses = roster.filter(r => r.name.trim()).map((r, i) => {
     const o = { id: nid(i), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
       night_eligible: !!r.night, is_trainee: !!r.trainee };
@@ -492,6 +515,12 @@ function buildPayload() {
 
   const holidays = holidaysEl().split(",").map(s => parseInt(s.trim(),10)).filter(x => x>=1);
   const wanted = parseWanted(byName), pre = parsePre(byName), carry = parseCarry(byName);
+  // 승인된 웹 신청 병합(중복 제거)
+  const seen = new Set(wanted.map(w => `${w.nurse_id}|${w.start_day}|${w.end_day}|${w.shift}`));
+  for (const w of await fetchApprovedWanted(byName, +year.value, +month.value)) {
+    const k = `${w.nurse_id}|${w.start_day}|${w.end_day}|${w.shift}`;
+    if (!seen.has(k)) { seen.add(k); wanted.push(w); }
+  }
 
   const exactChk = !!(document.getElementById("exactMode") && document.getElementById("exactMode").checked);
   const opMode = !!(document.getElementById("opMode") && document.getElementById("opMode").checked);
@@ -559,7 +588,7 @@ function parseCarry(byName) {
 }
 async function generate() {
   if (!isAdmin()) return;
-  const btn = genBtn; const payload = buildPayload();
+  const btn = genBtn; const payload = await buildPayload();
   if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
   const slow = payload.time_limit_seconds >= 60;
   btn.disabled = true; btn.textContent = "생성 중...";
@@ -587,7 +616,7 @@ async function generate() {
 let CANDS = [], CAND_PAYLOAD = null;
 async function generateCandidates() {
   if (!isAdmin()) return;
-  const payload = buildPayload();
+  const payload = await buildPayload();
   if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
   CAND_PAYLOAD = payload;
   candBtn.disabled = true; genState.textContent = "⏳ 동일 품질 후보들을 계산 중...";
@@ -613,7 +642,7 @@ async function generateCandidates() {
 }
 function applyCandidate(i) {
   const c = CANDS[i], p = CAND_PAYLOAD; if (!c || !p) return;
-  SCHED = { ...c, year: p.year, month: p.month,
+  SCHED = { ...c, year: p.year, month: p.month, holidays: p.holidays || [],
     teams: Object.fromEntries(p.nurses.map(n => [n.name, n.team])),
     carry_over: p.carry_over, nurseIds: Object.fromEntries(p.nurses.map(n => [n.name, n.id])) };
   store(); candBox.innerHTML = ""; genState.textContent = `✅ 안 ${i + 1} 선택됨`;
@@ -725,7 +754,7 @@ function renderBoard() {
   b += "</tbody>";
   document.getElementById("schedTable").innerHTML = h + b;
 }
-function cellCls(l){ const n=normCell(l); if(["D","E","N","M","O"].includes(l)) return l; if(l==="O")return"O"; if(["D","E","N","M"].includes(n)) return n+" code"; return "code"; }
+function cellCls(l){ const n=normCell(l); if(["D","E","N","M","O"].includes(l)) return l; if(["D","E","N","M"].includes(n)) return n+" code"; return "code"; }
 function normCell(l){ if(l==="M/D"||l==="M/E")return"M"; if(["D","E","N","M","O"].includes(l))return l; return "O"; }
 const CYCLE=["D","E","N","M","O"];
 function cycleCell(el){
