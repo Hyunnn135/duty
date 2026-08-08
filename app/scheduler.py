@@ -49,8 +49,6 @@ ALL_SHIFTS: list[Shift] = [*WORK_SHIFTS, Shift.OFF]
 TIEBREAK_ORDER: dict[Shift, int] = {
     Shift.DAY: 0, Shift.MID: 1, Shift.EVENING: 2, Shift.NIGHT: 3, Shift.OFF: 4,
 }
-# 1차 목적을 사전식으로 우선시키는 배수(타이브레이크 최대치보다 크게).
-_TIEBREAK_BIG = 2_000_000
 
 
 def _preflight(req: ScheduleRequest) -> str | None:
@@ -511,26 +509,46 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
                 isolated_terms.append(b)
 
     # (소프트) 오프 페어링: 오프 한 개만 끼는 것(근무-오프-근무) 지양 → 가급적 2개씩.
+    #   월초 경계: 전월 마지막 날이 근무(이월)면 1일차 오프-2일차 근무도 고립 오프로 본다.
     pairoff_terms: list = []
     if req.weight_paired_off > 0:
-        for i in range(N):
+        for i, nurse in enumerate(nurses):
             for d in range(1, nd - 1):
                 b = model.new_bool_var(f"isooff_{i}_{d}")
                 model.add(
                     b >= work[i, d - 1] + x[i, d, Shift.OFF] + work[i, d + 1] - 2
                 )
                 pairoff_terms.append(b)
+            carry = req.carry_over.get(nurse.id, [])
+            if nd >= 2 and carry and carry[-1] != Shift.OFF.value:
+                b = model.new_bool_var(f"isooff_{i}_carry")
+                model.add(b >= x[i, 0, Shift.OFF] + work[i, 1] - 1)
+                pairoff_terms.append(b)
 
     # (소프트) 긴 텀(≥4일 연속근무) 직후 오프 1개만 지양 → 오프 2개 강하게 우대.
     #   4일 연속근무(d-3..d) 뒤 d+1 오프인데 d+2 다시 근무면 페널티(고립오프와 중첩되어 더 큼).
+    #   월초 경계: 이월 끝 연속 근무 t일을 포함해 4일 창이 전월에 걸치는 경우도 본다.
     longoff_terms: list = []
     if req.weight_paired_off_after_long > 0:
-        for i in range(N):
+        for i, nurse in enumerate(nurses):
             for d in range(3, nd - 2):
                 b = model.new_bool_var(f"longoff_{i}_{d}")
                 model.add(
                     b >= work[i, d - 3] + work[i, d - 2] + work[i, d - 1] + work[i, d]
                     + x[i, d + 1, Shift.OFF] + work[i, d + 2] - 5
+                )
+                longoff_terms.append(b)
+            carry = req.carry_over.get(nurse.id, [])
+            t = _trailing_streak(carry, lambda s: s != Shift.OFF.value)
+            # d = 이번 달 마지막 근무일 인덱스(-1이면 텀 전체가 전월). 전월이 3-d일을 채운다.
+            for d in range(-1, 3):
+                if t < 3 - d or d + 2 > nd - 1:
+                    continue
+                b = model.new_bool_var(f"longoff_{i}_carry_{d}")
+                in_month = [work[i, k] for k in range(0, d + 1)]
+                model.add(
+                    b >= sum(in_month) + x[i, d + 1, Shift.OFF] + work[i, d + 2]
+                    - (len(in_month) + 1)
                 )
                 longoff_terms.append(b)
 

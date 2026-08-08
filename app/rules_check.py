@@ -63,6 +63,7 @@ def check(req: ValidateRequest) -> ValidateResponse:
         ("N", "M"): ("P1", "나이트 후 미드 금지"),
         ("E", "D"): ("P3", "역회전(이브닝→데이) 금지"),
     }
+    forbidden_tr = {(p.value, n.value) for p, n in HARD_FORBIDDEN_TRANSITIONS}
 
     for name, raw in req.schedules.items():
         seq = [_norm(c) for c in raw]
@@ -74,7 +75,7 @@ def check(req: ValidateRequest) -> ValidateResponse:
         for d in range(len(full) - 1):
             a, b = full[d], full[d + 1]
             key = (a, b)
-            if key in {(p.value, n.value) for p, n in HARD_FORBIDDEN_TRANSITIONS}:
+            if key in forbidden_tr:
                 p, rname = tr_name[key]
                 day = d + 1 - off + 1  # 이번 달 기준 (0 이하면 이월 내부 — 보고 제외)
                 if day >= 1:
