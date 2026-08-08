@@ -17,8 +17,21 @@ def client(tmp_path, monkeypatch):
 
 
 def _reg(client, email, name="사용자", pw="password123", ward="61"):
+    """가입 헬퍼: 병동 미개설이면 개설(master), 이미 있으면 초대 코드로 가입(staff)."""
     r = client.post("/api/auth/register",
                     json={"email": email, "password": pw, "name": name, "ward": ward})
+    if r.status_code == 403:  # 병동 기개설 → 초대 코드로 가입
+        import os
+        import sqlite3
+        conn = sqlite3.connect(os.environ["DUTY_DB"])
+        try:
+            code = conn.execute(
+                "SELECT code FROM ward_invites WHERE ward=?", (ward,)).fetchone()[0]
+        finally:
+            conn.close()
+        r = client.post("/api/auth/register",
+                        json={"email": email, "password": pw, "name": name,
+                              "invite_code": code})
     assert r.status_code == 200, r.text
     return r.json()
 

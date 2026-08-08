@@ -605,8 +605,8 @@ def submit_feedback(
         item = _feedback_item(r)
     finally:
         conn.close()
-    # 마스터에게 이메일 알림 (미설정 시 자동 무시)
-    masters = _emails_by_role(("master",))
+    # 내 병동 마스터에게 이메일 알림 (미설정 시 자동 무시 — 병동별 마스터 체계)
+    masters = _emails_by_role(("master",), ward=user.ward)
     if masters:
         subject = f"[듀티원] 새 피드백 · {user.name}"
         text = (
@@ -628,12 +628,14 @@ def _feedback_item(r: sqlite3.Row) -> FeedbackItem:
 
 @router.get("/feedback", response_model=list[FeedbackItem])
 def list_feedback(
-    _master: Annotated[UserInfo, Depends(require_roles("master"))],
+    master: Annotated[UserInfo, Depends(require_roles("master"))],
 ) -> list[FeedbackItem]:
-    """마스터 수신함 — 모든 병동의 피드백을 최신순으로."""
+    """마스터 수신함 — 내 병동의 피드백을 최신순으로(병동별 마스터 체계)."""
     conn = _conn()
     try:
-        rows = conn.execute("SELECT * FROM feedback ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM feedback WHERE ward=? ORDER BY id DESC", (master.ward,)
+        ).fetchall()
         return [_feedback_item(r) for r in rows]
     finally:
         conn.close()
@@ -642,11 +644,13 @@ def list_feedback(
 @router.post("/feedback/{fb_id}/read", response_model=FeedbackItem)
 def mark_feedback_read(
     fb_id: int,
-    _master: Annotated[UserInfo, Depends(require_roles("master"))],
+    master: Annotated[UserInfo, Depends(require_roles("master"))],
 ) -> FeedbackItem:
     conn = _conn()
     try:
-        row = conn.execute("SELECT * FROM feedback WHERE id=?", (fb_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM feedback WHERE id=? AND ward=?", (fb_id, master.ward)
+        ).fetchone()
         if row is None:
             raise HTTPException(404, "피드백을 찾을 수 없습니다.")
         conn.execute("UPDATE feedback SET read_at=? WHERE id=?", (_now(), fb_id))

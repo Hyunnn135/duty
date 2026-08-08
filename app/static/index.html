@@ -116,14 +116,16 @@
       <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상"></div>
       <div id="regFields" style="display:none">
         <label>이름</label><input id="authName" placeholder="예: 김간호">
-        <label style="margin-top:10px">병동</label><input id="authWard" placeholder="예: 61">
+        <label style="margin-top:10px">초대 코드</label><input id="authInvite" placeholder="부서장에게 받은 8자리 코드" style="text-transform:uppercase">
+        <div class="hint">부서원은 부서장에게 받은 <b>초대 코드</b>로 가입합니다 (병동 자동 설정).</div>
+        <label style="margin-top:10px">병동 (새로 개설할 때만)</label><input id="authWard" placeholder="예: 61 — 코드가 있으면 비워두세요">
       </div>
       <div id="authErr" style="display:none;color:var(--err);font-size:13px;"></div>
       <button id="authBtn" onclick="submitAuth()">로그인</button>
       <div style="font-size:12.5px;color:#64748b;text-align:center;">
         <a href="#" id="authToggle" onclick="toggleAuthMode();return false;">처음이신가요? 회원가입</a>
       </div>
-      <div class="hint">💡 최초 가입자는 자동으로 마스터 권한을 받습니다. 근무표 생성은 관리자(파트장)·마스터만 가능합니다.</div>
+      <div class="hint">💡 병동을 처음 개설한 사람이 그 병동의 마스터가 됩니다. 이후 가입은 초대 코드가 필요합니다.</div>
     </div>
   </div>
 </div>
@@ -158,6 +160,17 @@
         <div><label>액팅(미드) 근무 일수</label><input type="number" id="actingDays" value="8" min="0" max="16"></div>
       </div>
       <div class="hint">켜면 매일 인원이 <b>D4·E4·N4·M1(액팅 있는 날)</b> 또는 <b>D5·E5·N4(액팅 없는 날)</b> 중 하나로 <b>정확히</b> 고정됩니다(초과·미달 불가). 나이트 균등·오프 11~12 균등·원티드 100% 우선이 함께 적용됩니다. 인원 기준은 위의 Day/Evening/Night <b>최소값</b>을 기준 패턴으로 사용합니다. 액팅 일수↔오프 트레이드오프: <b>액팅 1일 = 오프 12개인 인원 1명 증가</b>(최대 16일). 최고 품질 보장을 위해 계산에 약 1~2분이 걸립니다.</div>
+    </div>
+
+    <div class="card">
+      <h2>🔑 부서원 초대 코드 <span class="sub">이 코드를 아는 사람만 우리 병동에 가입할 수 있습니다</span></h2>
+      <div class="row">
+        <code id="inviteCode" style="font-size:18px;font-weight:800;letter-spacing:2px;background:#f1f5f9;padding:6px 14px;border-radius:8px">········</code>
+        <button class="sm ghost" onclick="copyInvite()">📋 복사</button>
+        <button class="sm ghost" onclick="rotateInvite()">🔄 재발급</button>
+        <span id="inviteMsg" class="muted"></span>
+      </div>
+      <div class="hint">부서원에게 이 코드를 알려주면, 회원가입 화면의 "초대 코드"란에 입력해 가입합니다. 코드가 유출됐다면 재발급하세요(이전 코드는 즉시 무효).</div>
     </div>
 
     <div class="card">
@@ -329,7 +342,8 @@ async function submitAuth() {
   const email = authEmail.value.trim(), pw = authPw.value;
   const url = regMode ? "/api/auth/register" : "/api/auth/login";
   const body = regMode
-    ? { email, password: pw, name: authName.value.trim() || "사용자", ward: authWard.value.trim() }
+    ? { email, password: pw, name: authName.value.trim() || "사용자",
+        ward: authWard.value.trim(), invite_code: authInvite.value.trim().toUpperCase() }
     : { email, password: pw };
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -374,13 +388,33 @@ async function onAuthed() {
     if (r.nurses && r.nurses.length) roster = r.nurses.map(normRosterRow);
     else if (isAdmin()) seedRoster();
   } catch (e) { if (isAdmin() && roster.length === 0) seedRoster(); }
-  // 병동 사용자 목록(연결 드롭다운용, 관리자만)
-  if (isAdmin()) { try { wardUsers = await api("GET", "/api/auth/ward-users"); } catch (e) { wardUsers = []; } }
+  // 병동 사용자 목록(연결 드롭다운용, 관리자만) + 초대 코드
+  if (isAdmin()) {
+    try { wardUsers = await api("GET", "/api/auth/ward-users"); } catch (e) { wardUsers = []; }
+    loadInvite();
+  }
   // 내 계정과 연결된 명단 간호사
   try { const mn = await api("GET", "/api/me/nurse"); MY_NURSE = mn.linked ? mn.nurse : null; } catch (e) { MY_NURSE = null; }
   renderRoster(); renderLinkHint();
   // 발행된 근무표를 서버에서 우선 로드(부서원 포함). 없으면 로컬 복원.
   await loadPublished();
+}
+async function loadInvite() {
+  try { const inv = await api("GET", "/api/auth/invite");
+    document.getElementById("inviteCode").textContent = inv.code; } catch (e) {}
+}
+function copyInvite() {
+  const code = document.getElementById("inviteCode").textContent;
+  navigator.clipboard.writeText(code).then(
+    () => { inviteMsg.textContent = "복사됨 ✓"; setTimeout(() => inviteMsg.textContent = "", 1500); },
+    () => { inviteMsg.textContent = code; });
+}
+async function rotateInvite() {
+  if (!confirm("초대 코드를 재발급할까요? 이전 코드는 즉시 무효가 됩니다.")) return;
+  try { const inv = await api("POST", "/api/auth/invite/rotate");
+    document.getElementById("inviteCode").textContent = inv.code;
+    inviteMsg.textContent = "재발급 완료 ✓"; setTimeout(() => inviteMsg.textContent = "", 2000);
+  } catch (e) { inviteMsg.textContent = "재발급 실패: " + e.message; }
 }
 function normRosterRow(n) {
   return { id: n.id || genId(), name: n.name || "", team: n.team || 1,
