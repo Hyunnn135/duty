@@ -98,6 +98,26 @@ def test_ops_wanted_mostly_reflected(ops_result):
         f"원티드 미반영 {ops_result.unmet_wanted_off}건(과다) — 회귀 의심")
 
 
+def test_ops_team_cover_by_solo_capable(ops_result):
+    """각 팀에 매일 D/E/N '단독 수행 가능' 인원이 1명 이상 (파트장 피드백 하드 규칙)."""
+    teams = {r["name"]: r["team"] for r in experiment.aug_rows()}
+    def capable(name, sh):
+        if name in experiment.SOLO_NONE:
+            return False
+        if name in experiment.SOLO_NIGHT_ONLY:
+            return sh == "N"
+        return True
+    miss = []
+    for d in range(ops_result.num_days):
+        for t in (1, 2, 3):
+            for sh in ("D", "E", "N"):
+                who = [s.name for s in ops_result.schedules
+                       if teams.get(s.name) == t and _norm(s.shifts[d].value) == sh]
+                if not any(capable(w, sh) for w in who):
+                    miss.append((d + 1, t, sh, who))
+    assert not miss, f"단독가능 팀커버 미스: {miss[:5]}"
+
+
 def test_ops_no_hard_violations(ops_result):
     """대원칙(하드) 위반 0 — 검사기로 교차 검증."""
     grid = {s.name: [_norm(x.value) for x in s.shifts] for s in ops_result.schedules}

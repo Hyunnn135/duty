@@ -184,12 +184,15 @@
           <thead><tr>
             <th style="min-width:110px">이름</th><th>팀</th><th title="1=최고참">경력순위</th>
             <th title="임신·산후 시 해제">나이트</th><th title="입사 첫 달 교육">트레이닝</th>
-            <th>교육자</th><th title="이 간호사에 로그인 계정 연결">계정</th><th></th>
+            <th>교육자</th><th title="팀 듀티를 혼자 감당할 수 있는지 — 불가한 교대는 반드시 단독 가능 팀원과 함께 배정됩니다">단독근무</th>
+            <th title="이 간호사에 로그인 계정 연결">계정</th><th></th>
           </tr></thead>
           <tbody id="rosterBody"></tbody>
         </table>
       </div>
-      <div class="hint">트레이닝 중인 신규는 정원(4/4/4)에서 제외되고 교육자와 항상 같은 근무에 배정됩니다 (면담 F2).</div>
+      <div class="hint">트레이닝 중인 신규는 정원(4/4/4)에서 제외되고 교육자와 항상 같은 근무에 배정됩니다 (면담 F2).
+        <b>단독근무</b>: 트레이닝 직후 신규는 팀 듀티를 혼자 감당하지 못할 수 있습니다 — "모두 불가"나 "나이트만"으로 설정하면,
+        불가한 교대에서는 반드시 단독 가능한 팀원이 같은 듀티에 함께 배정됩니다(하드 규칙).</div>
     </div>
 
     <div class="card">
@@ -419,7 +422,8 @@ async function rotateInvite() {
 function normRosterRow(n) {
   return { id: n.id || genId(), name: n.name || "", team: n.team || 1,
     rank: n.seniority_rank || n.rank || 1, night: n.night_eligible !== false,
-    trainee: !!n.is_trainee, trainer: n.trainer || "", account: n.account_email || "" };
+    trainee: !!n.is_trainee, trainer: n.trainer || "", account: n.account_email || "",
+    solo: soloCode(n.solo_day, n.solo_evening, n.solo_night) };
 }
 function genId() { try { return "nur_" + crypto.randomUUID().slice(0, 8); } catch (e) { return "nur_" + Math.floor(Math.random() * 1e9); } }
 // 내 근무 이름: 연결된 명단 이름 우선, 없으면 계정 표시명
@@ -489,6 +493,8 @@ function renderRoster() {
   roster.forEach((r, i) => {
     const tr = document.createElement("tr");
     const others = roster.filter((_, j) => j !== i && roster[j].name).map(n => n.name);
+    const soloOpts = [["all","모두 가능"],["night","나이트만"],["de","데이·이브만"],["none","모두 불가"]]
+      .map(([v,l]) => `<option value="${v}" ${v===(r.solo||"all")?"selected":""}>${l}</option>`).join("");
     tr.innerHTML =
       `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
       `<td><select onchange="setR(${i},'team',+this.value)">${[1,2,3].map(t=>`<option ${t===r.team?"selected":""}>${t}</option>`).join("")}</select></td>` +
@@ -496,10 +502,22 @@ function renderRoster() {
       `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
       `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
       `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
+      `<td><select onchange="setR(${i},'solo',this.value)" ${(r.solo||"all")!=="all"?'style="color:var(--err);font-weight:600"':''}>${soloOpts}</select></td>` +
       `<td><select onchange="setR(${i},'account',this.value)">${accountOptions(r.account)}</select></td>` +
       `<td class="chk"><button class="sm danger" onclick="delNurse(${i})" title="삭제">×</button></td>`;
     body.appendChild(tr);
   });
+}
+// 단독근무 코드("all"/"night"/"de"/"none") ↔ (solo_day, solo_evening, solo_night) 변환
+function soloFlags(code) {
+  return { all: [true,true,true], night: [false,false,true],
+           de: [true,true,false], none: [false,false,false] }[code || "all"] || [true,true,true];
+}
+function soloCode(d, e, n) {
+  if (d !== false && e !== false && n !== false) return "all";
+  if (!d && !e && n !== false) return "night";
+  if (d !== false && e !== false && !n) return "de";
+  return "none";
 }
 function setR(i, k, v) { roster[i][k] = v; if (k === "name") renderRoster(); }
 function delNurse(i) { roster.splice(i, 1); renderRoster(); }
@@ -533,8 +551,10 @@ async function fetchApprovedWanted(byName, y, m) {
 }
 async function buildPayload() {
   const nurses = roster.filter(r => r.name.trim()).map((r, i) => {
+    const [sd, se, sn] = soloFlags(r.solo);
     const o = { id: nid(i), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
-      night_eligible: !!r.night, is_trainee: !!r.trainee };
+      night_eligible: !!r.night, is_trainee: !!r.trainee,
+      solo_day: sd, solo_evening: se, solo_night: sn };
     if (r.trainee && r.trainer) o.trainer_id = null; // resolve below
     return o;
   });
@@ -688,10 +708,14 @@ function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED
 
 async function saveRoster() {
   try {
-    const nurses = roster.filter(r => r.name.trim()).map(r => ({
-      id: r.id || genId(), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
-      night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "",
-      account_email: (r.account || "").trim() }));
+    const nurses = roster.filter(r => r.name.trim()).map(r => {
+      const [sd, se, sn] = soloFlags(r.solo);
+      return {
+        id: r.id || genId(), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+        night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "",
+        solo_day: sd, solo_evening: se, solo_night: sn,
+        account_email: (r.account || "").trim() };
+    });
     await api("PUT", "/api/roster", { nurses });
     rosterMsg("✅ 명단을 저장했습니다. (계정 연결 포함)");
     // 저장 후 내 연결 정보 갱신

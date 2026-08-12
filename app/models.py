@@ -78,6 +78,18 @@ class Nurse(BaseModel):
         description="(트레이닝 중인 경우) 교육자 간호사 id. 매달 달라질 수 있음. 해당 기간 "
         "동안 항상 같은 근무에 하드 배정 (면담 F2).",
     )
+    # 단독근무 능력 (파트장 피드백): 트레이닝 직후 신규는 팀의 듀티를 혼자 감당하지 못할 수
+    # 있다. False인 교대에서는 '팀 커버(팀당 각 듀티 최소 1명)' 인원으로 세지 않는다 —
+    # 배정은 가능하되, 반드시 단독 가능한 팀원이 같은 듀티에 함께 있어야 한다(하드).
+    solo_day: bool = Field(True, description="데이를 팀에서 단독 수행 가능한지")
+    solo_evening: bool = Field(True, description="이브닝을 팀에서 단독 수행 가능한지")
+    solo_night: bool = Field(True, description="나이트를 팀에서 단독 수행 가능한지")
+
+    def solo_capable(self, shift: "Shift") -> bool:
+        """해당 교대의 팀 커버 인원으로 셀 수 있는지 (D/E/N 외 교대는 항상 True)."""
+        return {
+            "D": self.solo_day, "E": self.solo_evening, "N": self.solo_night,
+        }.get(shift.value, True)
 
 
 class RequestType(str, Enum):

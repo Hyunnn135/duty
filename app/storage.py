@@ -56,6 +56,7 @@ def _emails_by_role(roles: tuple[str, ...], ward: str | None = None) -> list[str
 SENSITIVE_NURSE_FIELDS = {
     "seniority_rank", "night_eligible", "is_trainee", "trainer",
     "trainer_id", "competency", "employment", "note", "memo", "account_email",
+    "solo_day", "solo_evening", "solo_night",  # 신규 단독근무 능력 — 부서원 비공개
 }
 
 
