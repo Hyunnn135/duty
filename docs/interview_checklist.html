@@ -1,0 +1,255 @@
+<title>파트장 면담 답변지</title>
+<style>
+  :root{
+    --paper:#fbfcfc; --card:#ffffff; --ink:#17211f; --muted:#5f6d69;
+    --accent:#127a6b; --accent-2:#0e6155; --accent-soft:#e9f3f0; --accent-line:#bcd6cf;
+    --star:#9a5a0f; --star-soft:#f6ecdd; --line:#dbe4e1; --danger:#b23a48; --good:#1f8a54;
+    --serif:Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --paper:#0e1514; --card:#161e1d; --ink:#e6eeec; --muted:#93a39e;
+    --accent:#4cbcab; --accent-2:#63cdbd; --accent-soft:#12332e; --accent-line:#2a4a44;
+    --star:#e0a45c; --star-soft:#3a2c17; --line:#243330; --danger:#e08794; --good:#5cc48e;}}
+  :root[data-theme="dark"]{
+    --paper:#0e1514; --card:#161e1d; --ink:#e6eeec; --muted:#93a39e;
+    --accent:#4cbcab; --accent-2:#63cdbd; --accent-soft:#12332e; --accent-line:#2a4a44;
+    --star:#e0a45c; --star-soft:#3a2c17; --line:#243330; --danger:#e08794; --good:#5cc48e;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.55;}
+  .wrap{max-width:780px;margin:0 auto;padding:28px 20px 90px;}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:0 0 6px;}
+  h1{font-family:var(--serif);font-size:26px;margin:0 0 6px;letter-spacing:-.01em;text-wrap:balance;}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px;}
+  .howto{background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:10px;
+    padding:12px 15px;font-size:12.5px;margin-bottom:20px;}
+  .howto b{color:var(--accent);}
+  .meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;}
+  @media(max-width:560px){.meta{grid-template-columns:1fr;}}
+  .meta label{font-size:11.5px;font-weight:700;color:var(--muted);display:block;margin-bottom:4px;}
+  .meta input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;
+    background:var(--card);color:var(--ink);font:inherit;font-size:13.5px;}
+
+  /* 고정 도구막대 */
+  .bar{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--line);
+    margin:0 -20px 18px;padding:10px 20px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+  .prog{font-size:12.5px;color:var(--muted);font-weight:600;}
+  .prog b{color:var(--accent);}
+  .bar .sp{flex:1;}
+  button{font-family:inherit;cursor:pointer;border:0;border-radius:9px;font-size:12.5px;font-weight:700;padding:8px 14px;}
+  .btn-p{background:var(--accent);color:#fff;}
+  .btn-p:hover{background:var(--accent-2);}
+  .btn-g{background:var(--card);color:var(--ink);border:1px solid var(--line);}
+  .btn-g:hover{border-color:var(--accent);color:var(--accent);}
+
+  section{margin:26px 0;}
+  .sec-h{display:flex;align-items:baseline;gap:11px;border-bottom:1.5px solid var(--accent-line);
+    padding-bottom:6px;margin-bottom:6px;}
+  .sec-n{font-family:var(--serif);font-size:19px;font-weight:700;color:var(--accent);}
+  .sec-t{font-size:15px;font-weight:750;}
+  .sec-note{margin-left:auto;font-size:11px;color:var(--muted);font-style:italic;}
+  .sec-d{font-size:12px;color:var(--muted);margin:0 0 12px;}
+
+  .q{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;margin-bottom:12px;}
+  .q.done{border-color:var(--accent-line);}
+  .qhead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;}
+  .qid{font-weight:800;color:var(--accent);font-size:13px;}
+  .qtext{font-size:13.5px;font-weight:600;flex:1;min-width:200px;}
+  .star{background:var(--star-soft);color:var(--star);font-size:10px;font-weight:800;
+    padding:1px 7px;border-radius:20px;letter-spacing:.03em;white-space:nowrap;}
+  .ok{font-size:13px;color:var(--good);display:none;}
+  .q.done .ok{display:inline;}
+  .hint{font-size:11.5px;color:var(--muted);font-style:italic;margin:6px 0 8px;
+    padding-left:9px;border-left:2px solid var(--accent-line);}
+  textarea{width:100%;min-height:52px;padding:10px 12px;border:1px solid var(--line);
+    border-radius:9px;background:var(--paper);color:var(--ink);font:inherit;font-size:13.5px;
+    resize:vertical;}
+  textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent);}
+  .jnote{background:var(--star-soft);border:1px solid var(--accent-line);border-radius:9px;
+    padding:10px 14px;font-size:12.5px;margin-bottom:12px;}
+  .foot{margin-top:34px;border-top:1px solid var(--line);padding-top:14px;
+    font-size:11.5px;color:var(--muted);}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(16px);
+    background:var(--ink);color:var(--paper);padding:11px 18px;border-radius:10px;
+    font-size:13px;font-weight:600;opacity:0;transition:.25s;z-index:50;}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">간호사 근무표 자동 생성 · 요구사항 확인</p>
+  <h1>파트장 면담 답변지 (타이핑용)</h1>
+  <p class="sub">질문 아래 칸에 답을 입력하세요. 예시(실제 7·8월 근무표 관찰값)를 보여드리며
+    "이게 맞나요?"로 여쭤보면 빠릅니다.</p>
+
+  <div class="howto">💾 <b>자동 저장</b>: 입력 즉시 이 브라우저에 저장됩니다(닫았다 열어도 유지).<br>
+    📤 <b>다 쓰면</b>: 상단 <b>[답변 복사]</b>를 눌러 Claude 대화창에 붙여넣거나, <b>[파일로 저장]</b>으로 보관하세요.
+    모든 칸을 채우지 않아도 됩니다 — 아는 것만 적어도 반영할 수 있어요.</div>
+
+  <div class="meta">
+    <div><label>면담일</label><input data-k="meta_date" placeholder="예: 2026-07-25"></div>
+    <div><label>메모</label><input data-k="meta_note" placeholder="예: 61병동 파트장님 1차 면담"></div>
+  </div>
+
+  <div class="bar">
+    <span class="prog">진행 <b id="pDone">0</b> / <span id="pTot">0</span></span>
+    <span class="sp"></span>
+    <button class="btn-p" id="copyBtn">📋 답변 복사</button>
+    <button class="btn-g" id="dlBtn">⬇ 파일로 저장</button>
+    <button class="btn-g" id="clearBtn">지우기</button>
+  </div>
+
+  <div id="form"></div>
+
+  <div class="foot">간호사 근무표 자동 생성 프로젝트 · 답변은 docs/PLAN.md의 해당 항목에 반영됩니다 ·
+    상세 배경: docs/INTERVIEW_QUESTIONS.md</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const SECTIONS=[
+{n:"A",t:"교대 · 근무 코드",qs:[
+ {id:"A1",star:1,q:"미드(M) 근무의 시간대·인원·목적은? 미드도 회전 순서와 '같은 근무 2개 이상'에 포함되나요?",
+  h:"예: 시간대(09–17?), 하루 몇 명. 실측: 미드는 전원 팀 하위권(4~8위)이 수행, 상위 1~3위는 0회 — 저연차 전담이 맞나요? 몇 년차/몇 위까지 배정 가능한가요?"},
+ {id:"A2",star:1,q:"비근무 코드들(HY·공가·병가·Edu·경조·PH·AH·S·S1)의 정확한 의미와 오프/근무시간 계산 반영 방식은? 빠진 코드가 더 있나요?"},
+ {id:"A3",q:"복합근무 M/D·M/E — '실제 근무는 미드인데 미드는 교대수당이 없어 전산엔 D/E로 신청한다'로 이해했는데 맞나요? 근무시간 반영이 사람마다 달랐던 이유는?",
+  h:"예: 7월 구민주 M/D=+8h 반영, 성시은 M/E=+0h."},
+ {id:"A4",q:"파트장님 상근(S·S1)은 근무표에서 어떻게 처리하나요? S와 S1의 차이는?"}]},
+{n:"B",t:"인원 배치 (팀 · 교대별)",qs:[
+ {id:"B1",star:1,q:"각 교대에 팀당 최소 몇 명이 필요한가요? 교대 전체 목표 인원은?",
+  h:"실측(8월): 평일 대략 D5/E5/N4명. 팀당 각 교대 최소 1명은 사실상 항상 지켜졌고, 정확히 1명인 날이 37~63%(2명도 흔함) — 팀당 1명이 기본형인가요?"},
+ {id:"B2",star:1,q:"평일 vs 주말 vs 공휴일 인원이 다른가요? 미드는 언제 몇 명 넣나요?",
+  h:"실측: 미드는 대부분 0, 가끔 1명. 주말은 인원 감소."},
+ {id:"B3",q:"601~614호+616호를 3팀으로 어떻게 나누나요? 팀당 인원은 고정인가요?",
+  h:"실측 팀 인원: 7월 8/8/8, 8월 8/6/8."},
+ {id:"B4",q:"교대마다 차지(Charge) 간호사나 팀 리더를 지정하나요? 근무표에 표시가 필요한가요?"},
+ {id:"B5",q:"'이 밑으론 절대 안 되는 최소 인원'과 '가능하면 맞추고 싶은 적정 인원'이 따로 있나요? 있다면 각각 몇 명?",
+  h:"예: 데이 최소 4 / 적정 5 처럼 두 단계로 운영하는지."}]},
+{n:"C",t:"과로 · 휴식 규칙 (대원칙 승격 판단)",qs:[
+ {id:"C1",star:1,q:"연속 근무 최대 며칠인가요? 5일은 절대 상한인가요, 불가피하면 6일도 가능한가요? '5일 연속 근무 시 오프 2개'가 원칙인가요?",
+  h:"실측 최대 5일."},
+ {id:"C2",q:"연속 나이트 최대 며칠인가요? (실측 3일, 복지부 가이드라인도 3일) 확정 맞나요?"},
+ {id:"C3",star:1,q:"나이트 뒤 오프 2개가 원칙(N keep)인가요? 복지부 기준 '야간 2일+ 연속 시 48시간 휴식'을 절대 규칙으로 보나요, 불가피하면 오프 1개도 허용인가요?",
+  h:"실측: 8월은 연속N 후 100% 오프 2개+, 7월엔 오프 1개인 경우 6번."},
+ {id:"C4",q:"주 6일 초과 근무는 절대 금지인가요? 근무 간 최소 휴식시간(법정) 기준을 적용하나요?"}]},
+{n:"D",t:"나이트 관련",qs:[
+ {id:"D1",star:1,q:"한 사람당 한 달 나이트 최대 몇 개인가요? 2개월 합 상한이 있나요?",
+  h:"블로그 예시: 월 7 · 2개월 15. 실측: 평균 5~6, 최대 7."},
+ {id:"D2",q:"나이트 전담 간호사가 있나요? 있다면 복지부 기준(월 야간 15일 이내, 2023 개정)을 따르나요? 연속 몇 개로 짜나요?"},
+ {id:"D3",star:1,q:"신규는 입사 몇 개월까지 나이트 제외인가요? 임신·산후 기준은? 그 외 나이트 제외 대상이 있나요?"},
+ {id:"D4",q:"나이트 수를 사람마다 똑같이 맞추려 하나요, 어느 정도 차이는 허용하나요?"},
+ {id:"D5",q:"임산부·산후 1년 미만은 전면 나이트 제외로 운영하나요, 아니면 법정 예외(본인 동의/청구+고용노동부 인가)를 쓰는 경우도 있나요?"}]},
+{n:"E",t:"오프 · 휴가 정책",qs:[
+ {id:"E1",star:1,q:"한 달 오프 수 = 그 달 (토+일+공휴일) 수로 맞추나요? 정확히 지켜야 하는 값인가요, 목표치인가요?"},
+ {id:"E2",q:"공휴일을 오프에 어떻게 반영하나요? 공휴일 근무 시 대체휴무는? 공휴일 날짜는 자동 입력해도 되나요?"},
+ {id:"E3",q:"주말 오프 수를 사람마다 비슷하게 맞추나요? 토+일을 통째로 쉬는 '주말 통짜 오프'를 선호하나요?",
+  h:"실측: 주말의 16~21%만 양일 휴식(반쪽 오프가 더 흔함) — 의도인가요, 불가피였나요?"},
+ {id:"E4",star:1,q:"원티드 오프·나이트 신청은 월 최대 몇 개까지인가요? 겹치면 우선순위는? 신청 마감일과 승인 절차는?"}]},
+{n:"F",t:"경력 · 자격",qs:[
+ {id:"F1",star:1,q:"누가 경력자/신규인지 기준이 있나요(연차·입사일)? 교대마다 경력자 최소 1명이 필요한가요? 특히 나이트에?"},
+ {id:"F2",q:"신규 교육 시 프리셉터(교육자)–신규를 같은 근무에 붙이나요? 현재 그런 페어가 있나요?",
+  h:"확인됨: 프리셉터=각 팀 최고참(신유진·장현진·안현영), 프리셉티 있을 때만 동행. 남은 질문 — 현재 프리셉티는 누구? 동행은 100% 강제인가요, 되도록인가요(실측 ~75%)? 교육 기간은 몇 개월?"},
+ {id:"F3",q:"특정 처치·장비를 다룰 수 있는 사람이 교대마다 있어야 하나요? (특수 자격/스킬)"}]},
+{n:"G",t:"회전 · 패턴 세부 (실측 확인)",qs:[
+ {id:"G1",star:1,q:"E→D(다음날), N→D, N→E, N→M은 절대 금지가 맞나요? (실측 두 달간 0건)"},
+ {id:"G2",q:"M→D와 E→M이 각 1번씩 있었습니다. 불가피한 예외였나요, 원래 허용인가요?"},
+ {id:"G3",q:"E-오프-D(EOD)는 지양하되 불가피하면 허용이 맞나요? 한 사람당 월 몇 건까지 괜찮나요?",
+  h:"실측: 7월 20건 / 8월 14건, 인원의 절반은 0건."},
+ {id:"G4",q:"D에서 (E를 거치지 않고) 바로 N으로 가는 배치도 정상인가요? (실측 18건) 순방향 D→E→N을 선호하나요?"},
+ {id:"G5",q:"'같은 근무 2개 이상 붙이기'에서 — 나이트는 실측상 항상 2연속 이상이라 절대 규칙으로 봤습니다. D/E의 하루짜리 고립 근무는 어느 정도 허용인가요? (실측 월 3~4건)"}]},
+{n:"H",t:"전월 이월 · 인사 변동",qs:[
+ {id:"H1",star:1,q:"이번 달 표를 짤 때 전월 마지막 며칠의 근무를 봐야 하나요? 며칠치면 충분한가요?",
+  h:"용도: 월초 연속근무·연속나이트 계산. 예: 마지막 3일."},
+ {id:"H2",q:"월 중 전출입·입퇴사·복직은 어떻게 표기·계산하나요?",
+  h:"예: 7월 김에스더·김민신 7/13 전출."}]},
+{n:"I",t:"운영 · 워크플로우",qs:[
+ {id:"I1",q:"다음 달 근무표는 언제 짜고 언제 공지하나요? (마감일)"},
+ {id:"I2",star:1,q:"자동으로 짠 근무표에서 파트장님이 주로 어느 부분을 손보게 될까요? 확정 전 부서원 확인 절차가 있나요?"},
+ {id:"I3",q:"확정 후 두 사람이 근무를 바꾸는 경우(맞교대), 시스템 처리가 필요한가요?"},
+ {id:"I4",q:"확정·공지된 근무표를 바꿔야 할 때 절차가 있나요(본인 동의·기록)? 단체협약에 '확정 근무표 변경 금지'나 '수면휴가' 같은 보호조항이 있나요?"}]},
+{n:"J",t:"파트장님의 '절대 원칙' (가장 중요)",note:"대원칙 확정",
+ pre:"이 답이 프로그램의 대원칙(절대 불가침 규칙)에 직접 들어갑니다.",qs:[
+ {id:"J1",star:1,q:"무슨 일이 있어도 절대 어기면 안 되는 근무표 규칙이 있나요? (있는 대로 모두)"},
+ {id:"J2",q:"반대로, 웬만하면 지키지만 급하면 어겨도 되는 규칙은?"},
+ {id:"J3",star:1,q:"근무표를 짤 때 가장 신경 쓰는 것 3가지는?"},
+ {id:"J4",q:"부서원들이 가장 불만을 표하는 근무 패턴은 무엇인가요? (피해야 할 1순위)"},
+ {id:"J5",q:"다른 병동과 다른, 우리 병동만의 규칙이 있나요?"}]}
+];
+
+const KEY='duty_interview_v2';
+let store={};
+try{store=JSON.parse(localStorage.getItem(KEY)||'{}');}catch(e){store={};}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(store));}catch(e){}}
+
+const form=document.getElementById('form');
+let total=0;
+SECTIONS.forEach(sec=>{
+  total+=sec.qs.length;
+  const s=document.createElement('section');
+  s.innerHTML=`<div class="sec-h"><span class="sec-n">${sec.n}</span><span class="sec-t">${sec.t}</span>${sec.note?`<span class="sec-note">${sec.note}</span>`:''}</div>`+
+    (sec.pre?`<div class="jnote">⭐ ${sec.pre}</div>`:'')+
+    sec.qs.map(q=>`<div class="q" id="q_${q.id}">
+      <div class="qhead"><span class="qid">${q.id}</span><span class="qtext">${q.q}</span>
+        ${q.star?'<span class="star">★ 우선</span>':''}<span class="ok">✓</span></div>
+      ${q.h?`<div class="hint">${q.h}</div>`:''}
+      <textarea data-k="${q.id}" placeholder="답변 입력...">${store[q.id]||''}</textarea>
+    </div>`).join('');
+  form.appendChild(s);
+});
+document.getElementById('pTot').textContent=total;
+
+function refresh(){
+  let done=0;
+  document.querySelectorAll('textarea[data-k]').forEach(t=>{
+    const has=t.value.trim().length>0;
+    t.closest('.q')?.classList.toggle('done',has);
+    if(has)done++;
+  });
+  document.getElementById('pDone').textContent=done;
+}
+document.querySelectorAll('[data-k]').forEach(el=>{
+  if(el.tagName==='INPUT')el.value=store[el.dataset.k]||'';
+  el.addEventListener('input',()=>{store[el.dataset.k]=el.value;save();refresh();});
+});
+refresh();
+
+function buildMd(){
+  const d=store['meta_date']||'', note=store['meta_note']||'';
+  let md=`# 파트장 면담 답변${d?` (${d})`:''}\n`;
+  if(note)md+=`> ${note}\n`;
+  md+='\n';
+  let missing=[];
+  SECTIONS.forEach(sec=>{
+    const answered=sec.qs.filter(q=>(store[q.id]||'').trim());
+    if(answered.length)md+=`## ${sec.n}. ${sec.t}\n`;
+    sec.qs.forEach(q=>{
+      const a=(store[q.id]||'').trim();
+      if(a)md+=`### ${q.id}. ${q.q}\n${a}\n\n`;
+      else missing.push(q.id);
+    });
+  });
+  if(missing.length)md+=`---\n미답변: ${missing.join(', ')}\n`;
+  return md;
+}
+let tt;
+function toast(m){const el=document.getElementById('toast');el.textContent=m;el.classList.add('on');
+  clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2200);}
+document.getElementById('copyBtn').onclick=async()=>{
+  const md=buildMd();
+  try{await navigator.clipboard.writeText(md);toast('복사되었습니다 — Claude에게 붙여넣어 주세요');}
+  catch(e){const ta=document.createElement('textarea');ta.value=md;document.body.appendChild(ta);
+    ta.select();document.execCommand('copy');ta.remove();toast('복사되었습니다');}
+};
+document.getElementById('dlBtn').onclick=()=>{
+  const blob=new Blob([buildMd()],{type:'text/markdown;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='면담답변_'+(store['meta_date']||'초안')+'.md';a.click();
+  URL.revokeObjectURL(a.href);toast('파일로 저장했습니다');
+};
+document.getElementById('clearBtn').onclick=()=>{
+  if(!confirm('모든 답변을 지울까요? 되돌릴 수 없습니다.'))return;
+  store={};save();
+  document.querySelectorAll('[data-k]').forEach(el=>el.value='');
+  refresh();toast('초기화했습니다');
+};
+</script>
