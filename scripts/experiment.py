@@ -66,14 +66,27 @@ def off_target() -> int:
     return wk + extra
 
 
+# 단독근무 능력 (파트장 피드백): 각 팀 막내 신규는 팀 듀티를 혼자 감당하지 못한다.
+#   모두 불가: 한예은(1팀)·최연우·정현서(3팀) / 나이트만 단독 가능: 윤시우(1팀)·전시은(2팀)
+SOLO_NONE = {"한예은", "최연우", "정현서"}
+SOLO_NIGHT_ONLY = {"윤시우", "전시은"}
+
+
 def build_request(**over) -> ScheduleRequest:
     rows = aug_rows()
     team_seen: dict[int, int] = {}
     nurses = []
     for r in rows:
         team_seen[r["team"]] = team_seen.get(r["team"], 0) + 1
-        nurses.append(Nurse(id=r["empno"], name=r["name"], team=r["team"],
-                            seniority_rank=team_seen[r["team"]], night_eligible=True))
+        nm = r["name"]
+        sd = se = sn = True
+        if nm in SOLO_NONE:
+            sd = se = sn = False
+        elif nm in SOLO_NIGHT_ONLY:
+            sd = se = False
+        nurses.append(Nurse(id=r["empno"], name=nm, team=r["team"],
+                            seniority_rank=team_seen[r["team"]], night_eligible=True,
+                            solo_day=sd, solo_evening=se, solo_night=sn))
     wd = DayStaffing(D=ShiftStaff(min=5, target=5), E=ShiftStaff(min=5, target=5),
                      N=ShiftStaff(min=4, target=4), M=ShiftStaff(min=0))
     we = DayStaffing(D=ShiftStaff(min=4, target=4), E=ShiftStaff(min=4, target=4),

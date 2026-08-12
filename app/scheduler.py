@@ -240,7 +240,10 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         for i in range(N):
             model.add(sum(x[i, d, Shift.OFF] for d in days) >= req.min_off_days)
 
-    # (11) 팀별 최소 인원: 각 교대(D/E/N)에 팀당 team_min_staff명 이상
+    # (11) 팀별 최소 인원: 각 교대(D/E/N)에 팀당 team_min_staff명 이상.
+    #   ⚠️ '단독 수행 가능(solo_*)'한 팀원만 커버 인원으로 센다(파트장 피드백) —
+    #   트레이닝 직후 신규가 팀의 유일한 근무자가 되어 실질 커버가 비는 것을 차단.
+    #   단독 불가 신규도 배정은 되지만, 반드시 단독 가능 팀원이 같은 듀티에 함께 선다.
     if req.team_min_staff > 0:
         teams: dict[int, list[int]] = {}
         for i, nurse in enumerate(nurses):
@@ -248,8 +251,9 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         for d in days:
             for s in (Shift.DAY, Shift.EVENING, Shift.NIGHT):
                 for members in teams.values():
+                    capable = [i for i in members if nurses[i].solo_capable(s)]
                     model.add(
-                        sum(x[i, d, s] for i in members) >= req.team_min_staff
+                        sum(x[i, d, s] for i in capable) >= req.team_min_staff
                     )
 
     # (11b) F2: 트레이닝 신규는 교육자와 항상 같은 근무 (하드). 신규가 사전배정된

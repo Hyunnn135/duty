@@ -230,6 +230,36 @@ def test_carry_over_limits_month_start():
 
 # ---- Phase 2: 팀별 인원 · 나이트 블록 · 월 상한 · 프리셉터 · 미드=저연차 ----
 
+def test_team_cover_requires_solo_capable():
+    """팀 커버(팀당 D/E/N ≥1)는 '단독 수행 가능' 팀원으로만 충족된다.
+
+    단독 불가 신규는 배정될 수 있지만, 그 교대에 단독 가능 팀원이 반드시 함께 있어야 한다.
+    """
+    nurses = []
+    for i in range(12):
+        team = (i % 2) + 1  # 2팀 × 6명
+        solo = i not in (5, 11)  # 각 팀 막내는 전 듀티 단독 불가
+        nurses.append(Nurse(id=f"n{i}", name=f"간호사{i}", team=team,
+                            seniority_rank=(i // 2) + 1,
+                            solo_day=solo, solo_evening=solo, solo_night=solo))
+    req = ScheduleRequest(num_days=10, nurses=nurses,
+                          min_staff=MinStaff(D=2, E=2, N=2),
+                          team_min_staff=1, time_limit_seconds=20)
+    res = solve(req)
+    assert res.feasible
+    incapable = {"간호사5", "간호사11"}
+    team_of = {f"간호사{i}": (i % 2) + 1 for i in range(12)}
+    for d in range(10):
+        for t in (1, 2):
+            for sh in (Shift.DAY, Shift.EVENING, Shift.NIGHT):
+                who = [s.name for s in res.schedules
+                       if team_of[s.name] == t and s.shifts[d] == sh]
+                # 커버 자체가 있고, 그중 단독 가능자가 최소 1명
+                assert who, f"{d+1}일 {t}팀 {sh.value} 공백"
+                assert any(w not in incapable for w in who), (
+                    f"{d+1}일 {t}팀 {sh.value}가 단독 불가 인원만으로 채워짐: {who}")
+
+
 def test_team_min_staff_per_shift():
     nurses = [
         Nurse(id=f"n{i}", name=f"간호사{i}", team=(i % 3) + 1) for i in range(12)
