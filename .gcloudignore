@@ -1,0 +1,17 @@
+# gcloud run deploy --source . 업로드에서 제외 (빌드에 불필요한 것들)
+.git
+.github
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+tests
+docs
+data
+*.db
+.venv
+venv
+env
+scratchpad
+requirements-dev.txt
+# 유지: Dockerfile, requirements.txt, app/

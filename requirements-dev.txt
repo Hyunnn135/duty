@@ -1,0 +1,4 @@
+# 개발/테스트 전용 의존성 (CI에서 런타임 requirements와 함께 설치)
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27
