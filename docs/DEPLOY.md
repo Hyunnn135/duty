@@ -240,3 +240,25 @@ SQLite+단일 인스턴스는 한 병동 MVP용이다. 여러 병동·다수 동
 4. `DUTY_DB` 대신 `DATABASE_URL` 환경변수로 연결.
 
 이 변경은 라우터·프론트엔드를 건드리지 않고 데이터 접근 계층만 교체하면 된다.
+
+---
+
+## 부록 A. Railway 배포 (GCP 본인확인 대기 등 대안 경로)
+
+GCP 한국 계정 본인확인(신분증·카드 사진, 며칠 소요)이 어려울 때, **브라우저만으로**
+Railway(railway.app)에 같은 Docker 이미지를 배포할 수 있다. 월 약 $5(Hobby, 사용량 포함).
+
+1. https://railway.app → **Login with GitHub** → Hobby 플랜 결제 카드 등록(신분증 불필요)
+2. **New Project → Deploy from GitHub repo** → `Hyunnn135/duty` 선택(권한 허용)
+   → Dockerfile을 자동 감지해 빌드·배포한다 (main 브랜치 기준)
+3. 서비스 클릭 → **Variables** 탭:
+   - `DUTY_SECRET` = 아무도 모르는 긴 무작위 문장(JWT 서명키 — 절대 공유 금지)
+   - (`DUTY_DB`는 Dockerfile 기본값 `/data/duty.db` 사용, `PORT`는 Railway가 자동 주입)
+4. 서비스 우클릭(또는 Settings) → **Attach Volume** → mount path `/data`
+   (SQLite 영속화 — 볼륨 없이 재시작하면 데이터가 사라진다!)
+5. **Settings → Networking → Generate Domain** → 공개 URL 발급
+6. `https://<도메인>/health` 가 `{"status":"ok"}` 면 성공. 첫 가입자가 병동 개설(마스터).
+
+- GCP 워크플로(deploy.yml)는 `GCP_PROJECT_ID` 변수가 없으면 자동 스킵되므로 충돌 없음.
+- 이후 GCP 승인이 나면: 본 문서 §1~8로 Cloud Run에 띄우고, Railway 볼륨의
+  `/data/duty.db` 파일을 GCS 버킷으로 복사하면 데이터 이전 완료.
