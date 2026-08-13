@@ -113,9 +113,11 @@
     <h2 id="authTitle" style="margin-top:0">로그인</h2>
     <div class="grid">
       <div><label>이메일</label><input type="email" id="authEmail" placeholder="you@hospital.kr"></div>
-      <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상"></div>
+      <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상" oninput="checkPwMatch()"></div>
       <div id="regFields" style="display:none">
-        <label>이름</label><input id="authName" placeholder="예: 김간호">
+        <label>비밀번호 확인</label><input type="password" id="authPw2" placeholder="한 번 더 입력" oninput="checkPwMatch()">
+        <div id="pwMatch" style="font-size:12px;min-height:16px;margin-top:3px"></div>
+        <label style="margin-top:10px">이름</label><input id="authName" placeholder="예: 김간호">
         <label style="margin-top:10px">초대 코드</label><input id="authInvite" placeholder="부서장에게 받은 8자리 코드" style="text-transform:uppercase">
         <div class="hint">부서원은 부서장에게 받은 <b>초대 코드</b>로 가입합니다 (병동 자동 설정).</div>
         <label style="margin-top:10px">병동 (새로 개설할 때만)</label><input id="authWard" placeholder="예: 61 — 코드가 있으면 비워두세요">
@@ -125,7 +127,7 @@
       <div style="font-size:12.5px;color:#64748b;text-align:center;">
         <a href="#" id="authToggle" onclick="toggleAuthMode();return false;">처음이신가요? 회원가입</a>
       </div>
-      <div class="hint">💡 병동을 처음 개설한 사람이 그 병동의 마스터가 됩니다. 이후 가입은 초대 코드가 필요합니다.</div>
+      <div class="hint">💡 병동을 처음 개설한 사람이 그 병동의 운영자가 됩니다. 이후 가입은 초대 코드가 필요합니다.</div>
     </div>
   </div>
 </div>
@@ -138,8 +140,8 @@
     <div class="card">
       <h2>📅 편성 기간 & 인원 기준 <span class="sub">61병동 기본값 반영 (D/E/N=4=팀 3+액팅 1)</span></h2>
       <div class="grid cols">
-        <div><label>연도</label><input type="number" id="year" value="2026" min="2024" max="2030"></div>
-        <div><label>월</label><input type="number" id="month" value="8" min="1" max="12"></div>
+        <div><label>연도</label><input type="number" id="year" value="2026" min="2024" max="2030" onchange="updateHolidayHint()"></div>
+        <div><label>월</label><input type="number" id="month" value="8" min="1" max="12" onchange="updateHolidayHint()"></div>
         <div><label>Day 최소/적정</label><div class="row"><input type="number" id="minD" value="4" style="width:56px"><span>/</span><input type="number" id="tgtD" value="5" style="width:56px"></div></div>
         <div><label>Evening 최소/적정</label><div class="row"><input type="number" id="minE" value="4" style="width:56px"><span>/</span><input type="number" id="tgtE" value="5" style="width:56px"></div></div>
         <div><label>Night 최소/적정</label><div class="row"><input type="number" id="minN" value="4" style="width:56px"><span>/</span><input type="number" id="tgtN" value="4" style="width:56px"></div></div>
@@ -147,9 +149,9 @@
         <div><label>월 나이트 상한</label><input type="number" id="maxNights" value="7" min="0"></div>
         <div><label>연속 근무 최대</label><input type="number" id="maxCons" value="5" min="1"></div>
         <div><label>연속 나이트 최대</label><input type="number" id="maxNight" value="3" min="1"></div>
-        <div><label>공휴일 (쉼표, 날짜)</label><input id="holidays" placeholder="예: 15"></div>
       </div>
-      <div class="hint">월 오프 수는 (토+일+공휴일) 수에 맞춰 자동 최적화됩니다 (대원칙 P7). 공휴일은 평일처럼 인원을 채웁니다(면담 E2). <b>공휴일 입력 시 대체공휴일도 포함하세요</b> (예: 2026-08 → <code>15,17</code>).</div>
+      <div class="hint">월 오프 수는 (토+일+공휴일) 수에 맞춰 자동 최적화됩니다 (대원칙 P7). 공휴일은 평일처럼 인원을 채웁니다(면담 E2).<br>
+        🗓 <b>공휴일 자동 적용:</b> <span id="holidayInfo">—</span></div>
     </div>
 
     <div class="card">
@@ -174,24 +176,14 @@
     </div>
 
     <div class="card">
-      <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 명단 순서 = 경력순</span>
+      <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 위→아래 = 경력순 (드래그 또는 ▲▼로 순서 변경)</span>
         <span style="margin-left:auto;display:flex;gap:6px">
-          <button class="sm ghost" onclick="addNurse()">+ 행 추가</button>
           <button class="sm" onclick="saveRoster()">💾 명단 저장</button></span></h2>
       <div id="rosterMsg" class="hint" style="min-height:14px"></div>
-      <div class="scroll">
-        <table class="rtable" id="rosterTable">
-          <thead><tr>
-            <th style="min-width:110px">이름</th><th>팀</th><th title="1=최고참">경력순위</th>
-            <th title="임신·산후 시 해제">나이트</th><th title="입사 첫 달 교육">트레이닝</th>
-            <th>교육자</th><th title="팀 듀티를 혼자 감당할 수 있는지 — 불가한 교대는 반드시 단독 가능 팀원과 함께 배정됩니다">단독근무</th>
-            <th title="이 간호사에 로그인 계정 연결">계정</th><th></th>
-          </tr></thead>
-          <tbody id="rosterBody"></tbody>
-        </table>
-      </div>
-      <div class="hint">트레이닝 중인 신규는 정원(4/4/4)에서 제외되고 교육자와 항상 같은 근무에 배정됩니다 (면담 F2).
-        <b>단독근무</b>: 트레이닝 직후 신규는 팀 듀티를 혼자 감당하지 못할 수 있습니다 — "모두 불가"나 "나이트만"으로 설정하면,
+      <div id="rosterSections"></div>
+      <div class="hint">이름 왼쪽의 <b>⠿</b>를 잡고 끌면 순서·팀을 바꿀 수 있습니다(다른 팀 표로도 이동 가능). 위에 있을수록 고참입니다.
+        트레이닝 중인 신규는 정원(4/4/4)에서 제외되고 교육자와 항상 같은 근무에 배정됩니다 (면담 F2).
+        <b>단독근무</b>: 트레이닝 직후 신규가 팀 듀티를 혼자 감당하지 못하면 "모두 불가"/"나이트만"으로 설정 —
         불가한 교대에서는 반드시 단독 가능한 팀원이 같은 듀티에 함께 배정됩니다(하드 규칙).</div>
     </div>
 
@@ -211,10 +203,9 @@
 박지우, 7, HY"></textarea>
         </div>
         <div>
-          <label>전월 말일 이월 — <code>이름, 근무나열(오래된→마지막)</code></label>
-          <textarea id="carry" placeholder="예)
-정하은, N,N,O"></textarea>
-          <div class="hint">전월 마지막 며칠(최소 7일 권장, 면담 H1)의 근무를 넣으면 월초 연속·회전 규칙에 반영됩니다.</div>
+          <label>전월 말일 이월 — 자동</label>
+          <div class="hint" style="margin-top:0">🔄 <b>발행된 전월 근무표의 마지막 7일</b>이 자동으로 반영되어 월초 연속·회전 규칙에 적용됩니다
+            (발행된 전월 표가 없으면 이월 없이 생성). 별도 입력이 필요 없습니다.</div>
         </div>
       </div>
     </div>
@@ -306,20 +297,20 @@
     </div>
   </section>
 
-  <!-- ============ 수신함(마스터) ============ -->
+  <!-- ============ 수신함(운영자) ============ -->
   <section data-tab="inbox">
-    <div class="card"><h2>📨 피드백 수신함 <span class="sub">마스터 전용</span></h2>
+    <div class="card"><h2>📨 피드백 수신함 <span class="sub">운영자 전용</span></h2>
       <div id="inboxList"></div></div>
   </section>
 </div>
 
 <!-- 피드백 플로팅 버튼 -->
-<button id="fbBtn" onclick="openFeedback()" style="position:fixed;right:18px;bottom:18px;z-index:50;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,.2);display:none">💬 마스터에게</button>
+<button id="fbBtn" onclick="openFeedback()" style="position:fixed;right:18px;bottom:18px;z-index:50;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,.2);display:none">💬 운영자에게</button>
 <div id="fbModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;align-items:center;justify-content:center;padding:20px">
   <div class="card" style="max-width:420px;width:100%">
-    <h2 style="margin-top:0">💬 마스터에게 메시지</h2>
+    <h2 style="margin-top:0">💬 운영자에게 메시지</h2>
     <textarea id="fbText" placeholder="개선 요청·문의 등을 남겨주세요" style="min-height:100px"></textarea>
-    <div class="hint">마스터 수신함에 표시되며, 이메일 알림이 설정된 경우 메일로도 전달됩니다.</div>
+    <div class="hint">운영자 수신함에 표시되며, 이메일 알림이 설정된 경우 메일로도 전달됩니다.</div>
     <div id="fbMsg" class="hint"></div>
     <div class="row" style="margin-top:10px"><button class="sm" onclick="sendFeedback()">보내기</button>
       <button class="sm ghost" onclick="document.getElementById('fbModal').style.display='none'">닫기</button></div>
@@ -329,7 +320,7 @@
 <script>
 /* ============================ 인증 ============================ */
 let regMode = false, ME = null;
-const ROLE_KO = { master: "마스터", admin: "관리자(파트장)", staff: "일반(부서원)" };
+const ROLE_KO = { master: "운영자", admin: "관리자(파트장)", staff: "일반(부서원)" };
 function token() { return localStorage.getItem("duty_token") || ""; }
 function authHeaders() { return token() ? { "Authorization": "Bearer " + token() } : {}; }
 function showAuth(s) { document.getElementById("authOverlay").style.display = s ? "flex" : "none"; }
@@ -341,8 +332,21 @@ function toggleAuthMode() {
   authToggle.textContent = regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
 }
 function authError(m) { authErr.textContent = m; authErr.style.display = "block"; }
+function checkPwMatch() {
+  const el = document.getElementById("pwMatch");
+  if (!el || !regMode) return true;
+  const a = authPw.value, b = document.getElementById("authPw2").value;
+  if (!a || !b) { el.textContent = ""; return false; }
+  const ok = a === b;
+  el.textContent = ok ? "✓ 비밀번호가 일치합니다" : "✗ 비밀번호가 일치하지 않습니다";
+  el.style.color = ok ? "var(--ok)" : "var(--err)";
+  return ok;
+}
 async function submitAuth() {
   const email = authEmail.value.trim(), pw = authPw.value;
+  if (regMode && pw !== document.getElementById("authPw2").value) {
+    authError("비밀번호가 일치하지 않습니다. 다시 확인해 주세요."); return;
+  }
   const url = regMode ? "/api/auth/register" : "/api/auth/login";
   const body = regMode
     ? { email, password: pw, name: authName.value.trim() || "사용자",
@@ -388,7 +392,7 @@ async function onAuthed() {
   // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
   try {
     const r = await api("GET", "/api/roster");
-    if (r.nurses && r.nurses.length) roster = r.nurses.map(normRosterRow);
+    if (r.nurses && r.nurses.length) roster = loadRosterList(r.nurses);
     else if (isAdmin()) seedRoster();
   } catch (e) { if (isAdmin() && roster.length === 0) seedRoster(); }
   // 병동 사용자 목록(연결 드롭다운용, 관리자만) + 초대 코드
@@ -398,7 +402,7 @@ async function onAuthed() {
   }
   // 내 계정과 연결된 명단 간호사
   try { const mn = await api("GET", "/api/me/nurse"); MY_NURSE = mn.linked ? mn.nurse : null; } catch (e) { MY_NURSE = null; }
-  renderRoster(); renderLinkHint();
+  renderRoster(); renderLinkHint(); updateHolidayHint();
   // 발행된 근무표를 서버에서 우선 로드(부서원 포함). 없으면 로컬 복원.
   await loadPublished();
 }
@@ -421,9 +425,15 @@ async function rotateInvite() {
 }
 function normRosterRow(n) {
   return { id: n.id || genId(), name: n.name || "", team: n.team || 1,
-    rank: n.seniority_rank || n.rank || 1, night: n.night_eligible !== false,
+    rank: n.seniority_rank || n.rank || 999, night: n.night_eligible !== false,
     trainee: !!n.is_trainee, trainer: n.trainer || "", account: n.account_email || "",
     solo: soloCode(n.solo_day, n.solo_evening, n.solo_night) };
+}
+// 저장된 명단 로드: 팀 내 순서를 저장 당시 경력순위로 복원(배열 순서 = 경력순)
+function loadRosterList(nurses) {
+  const rows = nurses.map(normRosterRow);
+  rows.sort((a, b) => a.team - b.team || a.rank - b.rank);
+  return rows;
 }
 function genId() { try { return "nur_" + crypto.randomUUID().slice(0, 8); } catch (e) { return "nur_" + Math.floor(Math.random() * 1e9); } }
 // 내 근무 이름: 연결된 명단 이름 우선, 없으면 계정 표시명
@@ -474,11 +484,11 @@ function seedRoster() {
     ["안현영",2],["최민수",2],["정예은",2],["신다혜",2],["강하늘",2],["류지원",2],["조은비",2],["윤채아",2],
     ["신유진",3],["윤지호",3],["임채원",3],["권나래",3],["황도현",3],["서예린",3],["남태희",3],["고은솔",3],
   ];
-  roster = names.map(([name, team], i) => ({
-    id: genId(), name, team, rank: (i % 8) + 1, night: true, trainee: false, trainer: "", account: "",
+  roster = names.map(([name, team]) => ({
+    id: genId(), name, team, night: true, trainee: false, trainer: "", account: "",
   }));
 }
-function addNurse() { roster.push({ id: genId(), name: "", team: 1, rank: roster.length + 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
+function addNurse(team) { roster.push({ id: genId(), name: "", team: team || 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
 function accountOptions(sel) {
   const opts = [`<option value="">— 미연결 —</option>`];
   for (const u of wardUsers) opts.push(`<option value="${esc(u.email)}" ${u.email===sel?"selected":""}>${esc(u.name)} (${esc(u.email)})</option>`);
@@ -486,27 +496,85 @@ function accountOptions(sel) {
   if (sel && !wardUsers.some(u => u.email === sel)) opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
   return opts.join("");
 }
+// 팀 표시 이름: 1→A팀, 2→B팀, 3→C팀
+function teamName(t) { return (["A","B","C"][t-1] || t) + "팀"; }
+// 팀별 섹션 렌더링. 배열 순서(팀 내) = 경력순(위=고참). ⠿ 드래그 또는 ▲▼로 순서·팀 변경.
+let _dragIdx = null;
 function renderRoster() {
-  const body = document.getElementById("rosterBody");
-  if (!body) return;
-  body.innerHTML = "";
-  roster.forEach((r, i) => {
-    const tr = document.createElement("tr");
-    const others = roster.filter((_, j) => j !== i && roster[j].name).map(n => n.name);
-    const soloOpts = [["all","모두 가능"],["night","나이트만"],["de","데이·이브만"],["none","모두 불가"]]
-      .map(([v,l]) => `<option value="${v}" ${v===(r.solo||"all")?"selected":""}>${l}</option>`).join("");
-    tr.innerHTML =
-      `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
-      `<td><select onchange="setR(${i},'team',+this.value)">${[1,2,3].map(t=>`<option ${t===r.team?"selected":""}>${t}</option>`).join("")}</select></td>` +
-      `<td><input type="number" min="1" style="width:56px" value="${r.rank}" oninput="setR(${i},'rank',+this.value)"></td>` +
-      `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
-      `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
-      `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
-      `<td><select onchange="setR(${i},'solo',this.value)" ${(r.solo||"all")!=="all"?'style="color:var(--err);font-weight:600"':''}>${soloOpts}</select></td>` +
-      `<td><select onchange="setR(${i},'account',this.value)">${accountOptions(r.account)}</select></td>` +
-      `<td class="chk"><button class="sm danger" onclick="delNurse(${i})" title="삭제">×</button></td>`;
-    body.appendChild(tr);
-  });
+  const box = document.getElementById("rosterSections");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const team of [1, 2, 3]) {
+    const idxs = roster.map((r, i) => [r, i]).filter(([r]) => r.team === team).map(([, i]) => i);
+    const sec = document.createElement("div");
+    sec.innerHTML =
+      `<div class="row" style="margin:12px 0 6px;align-items:center">
+        <span class="pill" style="font-size:13px;padding:3px 12px">${teamName(team)}</span>
+        <span class="muted">${idxs.length}명 · 위=고참</span>
+        <button class="sm ghost" style="margin-left:auto" onclick="addNurse(${team})">+ ${teamName(team)} 인원 추가</button>
+      </div>`;
+    const scroll = document.createElement("div"); scroll.className = "scroll";
+    const table = document.createElement("table"); table.className = "rtable";
+    table.innerHTML = `<thead><tr>
+        <th style="width:30px"></th><th style="width:44px">순위</th><th style="min-width:110px">이름</th>
+        <th title="임신·산후 시 해제">나이트</th><th title="입사 첫 달 교육">트레이닝</th>
+        <th>교육자</th><th title="팀 듀티를 혼자 감당할 수 있는지">단독근무</th>
+        <th title="이 간호사에 로그인 계정 연결">계정</th><th style="width:70px">순서</th><th></th>
+      </tr></thead>`;
+    const tbody = document.createElement("tbody");
+    tbody.dataset.team = team;
+    tbody.addEventListener("dragover", e => e.preventDefault());
+    tbody.addEventListener("drop", e => { e.preventDefault(); moveNurse(_dragIdx, team, null); });
+    idxs.forEach((i, pos) => {
+      const r = roster[i];
+      const tr = document.createElement("tr");
+      tr.draggable = true;
+      tr.addEventListener("dragstart", () => { _dragIdx = i; });
+      tr.addEventListener("dragover", e => { e.preventDefault(); e.stopPropagation(); });
+      tr.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); moveNurse(_dragIdx, team, i); });
+      const others = roster.filter((_, j) => j !== i && roster[j].name).map(n => n.name);
+      const soloOpts = [["all","모두 가능"],["night","나이트만"],["de","데이·이브만"],["none","모두 불가"]]
+        .map(([v,l]) => `<option value="${v}" ${v===(r.solo||"all")?"selected":""}>${l}</option>`).join("");
+      tr.innerHTML =
+        `<td class="chk" style="cursor:grab;color:#94a3b8" title="드래그로 이동">⠿</td>` +
+        `<td class="chk" style="color:#64748b;font-weight:600">${pos + 1}</td>` +
+        `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
+        `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
+        `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
+        `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
+        `<td><select onchange="setR(${i},'solo',this.value)" ${(r.solo||"all")!=="all"?'style="color:var(--err);font-weight:600"':''}>${soloOpts}</select></td>` +
+        `<td><select onchange="setR(${i},'account',this.value)">${accountOptions(r.account)}</select></td>` +
+        `<td class="chk" style="white-space:nowrap">` +
+          `<button class="sm ghost" onclick="nudgeNurse(${i},-1)" title="위로">▲</button>` +
+          `<button class="sm ghost" onclick="nudgeNurse(${i},1)" title="아래로">▼</button></td>` +
+        `<td class="chk"><button class="sm danger" onclick="delNurse(${i})" title="삭제">×</button></td>`;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    sec.appendChild(scroll);
+    box.appendChild(sec);
+  }
+}
+// from(전역 인덱스)을 팀 team의 before(전역 인덱스, null=팀 맨 끝) 앞으로 이동
+function moveNurse(from, team, before) {
+  if (from == null) { _dragIdx = null; return; }
+  const [item] = roster.splice(from, 1);
+  item.team = team;
+  if (before == null) roster.push(item);  // 배열 끝 = 해당 팀 섹션의 맨 아래
+  else roster.splice(from < before ? before - 1 : before, 0, item);
+  _dragIdx = null;
+  renderRoster();
+}
+// 같은 팀 안에서 한 칸 위/아래
+function nudgeNurse(i, dir) {
+  const r = roster[i];
+  const idxs = roster.map((x, j) => [x, j]).filter(([x]) => x.team === r.team).map(([, j]) => j);
+  const pos = idxs.indexOf(i);
+  const swap = idxs[pos + dir];
+  if (swap == null) return;
+  [roster[i], roster[swap]] = [roster[swap], roster[i]];
+  renderRoster();
 }
 // 단독근무 코드("all"/"night"/"de"/"none") ↔ (solo_day, solo_evening, solo_night) 변환
 function soloFlags(code) {
@@ -549,10 +617,47 @@ async function fetchApprovedWanted(byName, y, m) {
     return out;
   } catch (e) { return []; }  // 서버 미가용 시 텍스트 입력분만 사용
 }
+// 한국 공휴일(대체공휴일 포함) 자동 표 — "연-월": [일...]. 임시공휴일은 미포함(지정 시 알림).
+// ⚠️ 매년 말 다음 해 공휴일을 확인해 갱신할 것.
+const KR_HOLIDAYS = {
+  "2025-1": [1, 28, 29, 30], "2025-3": [1, 3], "2025-5": [5, 6], "2025-6": [6],
+  "2025-8": [15], "2025-10": [3, 5, 6, 7, 8, 9], "2025-12": [25],
+  "2026-1": [1], "2026-2": [16, 17, 18], "2026-3": [1, 2], "2026-5": [5, 24, 25],
+  "2026-6": [6], "2026-8": [15, 17], "2026-9": [24, 25, 26], "2026-10": [3, 5, 9], "2026-12": [25],
+  "2027-1": [1], "2027-2": [6, 7, 8, 9], "2027-3": [1], "2027-5": [5, 13],
+  "2027-6": [6], "2027-8": [15, 16], "2027-9": [14, 15, 16], "2027-10": [3, 4, 9, 11], "2027-12": [25, 27],
+};
+function holidaysFor(y, m) { return KR_HOLIDAYS[`${y}-${m}`] || []; }
+function updateHolidayHint() {
+  const el = document.getElementById("holidayInfo");
+  if (!el) return;
+  const y = +year.value, m = +month.value, hs = holidaysFor(y, m);
+  const known = Object.keys(KR_HOLIDAYS).some(k => k.startsWith(`${y}-`)) || (y >= 2025 && y <= 2027);
+  el.textContent = hs.length ? `${y}년 ${m}월: ${hs.join(", ")}일 (대체공휴일 포함)` :
+    (known ? `${y}년 ${m}월: 공휴일 없음` : `${y}년 데이터 없음 — 관리자에게 공휴일 표 갱신을 요청하세요`);
+}
+// 발행된 전월 근무표의 마지막 7일을 이월로 자동 반영 (없으면 이월 없이 생성)
+async function fetchAutoCarry(byName, y, m) {
+  const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+  try {
+    const r = await api("GET", `/api/schedule/${py}/${pm}`);
+    const rows = (r && r.data && r.data.schedules) || [];
+    const carry = {};
+    for (const s of rows) {
+      const id = byName[s.name];
+      if (!id) continue;
+      const labs = (s.labels || s.shifts || []).slice(-7)
+        .map(v => ["D","E","N","M"].includes(v) ? v : (v === "M/D" || v === "M/E" ? "M" : "O"));
+      if (labs.length) carry[id] = labs;
+    }
+    return carry;
+  } catch (e) { return {}; }  // 발행된 전월 표 없음 → 이월 미적용
+}
 async function buildPayload() {
+  const teamPos = { 1: 0, 2: 0, 3: 0 };  // 팀 내 위치 = 경력순위
   const nurses = roster.filter(r => r.name.trim()).map((r, i) => {
     const [sd, se, sn] = soloFlags(r.solo);
-    const o = { id: nid(i), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+    const o = { id: nid(i), name: r.name.trim(), team: r.team, seniority_rank: ++teamPos[r.team],
       night_eligible: !!r.night, is_trainee: !!r.trainee,
       solo_day: sd, solo_evening: se, solo_night: sn };
     if (r.trainee && r.trainer) o.trainer_id = null; // resolve below
@@ -567,8 +672,9 @@ async function buildPayload() {
   const weekend = { D: st(mD,mD), E: st(mE,mE), N: st(mN,mN), M: st(0,0) };
   const staffing = { weekday, weekend, holiday: weekday };
 
-  const holidays = holidaysEl().split(",").map(s => parseInt(s.trim(),10)).filter(x => x>=1);
-  const wanted = parseWanted(byName), pre = parsePre(byName), carry = parseCarry(byName);
+  const holidays = holidaysFor(+year.value, +month.value);
+  const wanted = parseWanted(byName), pre = parsePre(byName);
+  const carry = await fetchAutoCarry(byName, +year.value, +month.value);
   // 승인된 웹 신청 병합(중복 제거)
   const seen = new Set(wanted.map(w => `${w.nurse_id}|${w.start_day}|${w.end_day}|${w.shift}`));
   for (const w of await fetchApprovedWanted(byName, +year.value, +month.value)) {
@@ -600,7 +706,6 @@ async function buildPayload() {
   }
   return payload;
 }
-function holidaysEl(){ return document.getElementById("holidays").value; }
 function parseWanted(byName) {
   // 지원 형식: "이름,시작,종료,종류" / "이름,일,종류" / "이름,시작,종료" / "이름,일"
   const SH = ["D","E","N","O"];
@@ -631,15 +736,6 @@ function parsePre(byName) {
   }
   return out;
 }
-function parseCarry(byName) {
-  const out = {};
-  for (const line of document.getElementById("carry").value.split("\n")) {
-    const idx = line.indexOf(","); if (idx<0) continue;
-    const name = line.slice(0,idx).trim(); const seq = line.slice(idx+1).split(",").map(s=>s.trim().toUpperCase()).filter(Boolean);
-    if (byName[name] && seq.length) out[byName[name]] = seq;
-  }
-  return out;
-}
 async function generate() {
   if (!isAdmin()) return;
   const btn = genBtn; const payload = await buildPayload();
@@ -651,7 +747,7 @@ async function generate() {
     const res = await fetch("/api/schedule", { method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify(payload) });
     if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
-    if (res.status === 403) throw new Error("생성 권한이 없습니다 (관리자·마스터 전용)");
+    if (res.status === 403) throw new Error("생성 권한이 없습니다 (관리자·운영자 전용)");
     const data = await res.json().catch(() => ({}));
     if (res.status === 422) throw new Error("입력값 오류: " + JSON.stringify(data.detail).slice(0,200));
     if (!res.ok) throw new Error((data && data.detail ? JSON.stringify(data.detail).slice(0,200) : ("서버 오류 " + res.status)));
@@ -708,10 +804,12 @@ function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED
 
 async function saveRoster() {
   try {
+    const teamPos = { 1: 0, 2: 0, 3: 0 };  // 팀 내 위치 = 경력순위(위=1)
     const nurses = roster.filter(r => r.name.trim()).map(r => {
       const [sd, se, sn] = soloFlags(r.solo);
       return {
-        id: r.id || genId(), name: r.name.trim(), team: r.team, seniority_rank: r.rank,
+        id: r.id || genId(), name: r.name.trim(), team: r.team,
+        seniority_rank: ++teamPos[r.team],
         night_eligible: !!r.night, is_trainee: !!r.trainee, trainer: r.trainer || "",
         solo_day: sd, solo_evening: se, solo_night: sn,
         account_email: (r.account || "").trim() };
@@ -791,7 +889,7 @@ function renderBoard() {
   let prevTeam = null;
   for (const r of rows) {
     const sep = prevTeam!==null && r.team!==prevTeam ? " teamsep" : ""; prevTeam = r.team;
-    b += `<tr class="${sep.trim()}"><td class="name">${esc(r.name)} <span class="pill">${r.team}팀</span></td>`;
+    b += `<tr class="${sep.trim()}"><td class="name">${esc(r.name)} <span class="pill">${teamName(r.team)}</span></td>`;
     for (let d=0; d<nd; d++){
       const lab = (r.labels&&r.labels[d])||r.shifts[d];
       const we = y&&m&&isWeekend(y,m,d+1);
@@ -854,7 +952,7 @@ function showWarnings(data){
        <span class="muted">※ 대원칙 위반은 무시하고 확정하거나, 대안 3안 중 하나를 골라 수정할 수 있습니다 (PLAN 0.2).</span></div>
      <div id="altBox" style="margin-top:12px"></div>`;
 }
-// 현재 그리드로 대안 3안 요청 (관리자·마스터)
+// 현재 그리드로 대안 3안 요청 (관리자·운영자)
 let ALTS=[];
 function nightIneligibleNames(){
   const names=(roster||[]).filter(r=>r.night===false && r.name.trim()).map(r=>r.name.trim());
