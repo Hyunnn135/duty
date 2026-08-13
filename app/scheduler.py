@@ -75,6 +75,42 @@ def _preflight(req: ScheduleRequest) -> str | None:
         max_work_slots = n * (req.num_days - req.min_off_days)
         if worst * req.num_days > max_work_slots:
             return "min_off_days 설정이 너무 커서 최소 인원을 채울 수 없습니다."
+
+    # 운영 모드(정확 인원 패턴 + 오프 하드 밴드) 산술 진단:
+    #   인원 N이 오프 [T, T+1]을 지키려면 총 근무가 N(nd-T-1)~N(nd-T)이어야 하는데,
+    #   일별 정확 패턴이 낼 수 있는 총 근무 범위와 겹치지 않으면 해가 존재하지 않는다.
+    #   (예: 데모 24명 + D4E4N4M1/D5E5N4 + 8월 오프11 → 456~480 필요 vs 최대 434 → 불가)
+    nd = req.num_days
+    T = req.default_off_target()
+    if req.exact_mode and req.daily_patterns and T is not None and 0 < T + 1 < nd:
+        sizes = [sum(int(p.get(s.value, 0)) for s in WORK_SHIFTS) for p in req.daily_patterns]
+        act = [sz for p, sz in zip(req.daily_patterns, sizes) if int(p.get("M", 0)) > 0]
+        non = [sz for p, sz in zip(req.daily_patterns, sizes) if int(p.get("M", 0)) == 0]
+        a = req.acting_days
+        if a is not None and act and non:
+            w_min = a * min(act) + (nd - a) * min(non)
+            w_max = a * max(act) + (nd - a) * max(non)
+        else:
+            w_min, w_max = nd * min(sizes), nd * max(sizes)
+        need_lo, need_hi = n * (nd - T - 1), n * (nd - T)
+        if w_max < need_lo or w_min > need_hi:
+            import math as _math
+            rec_lo = _math.ceil(w_min / (nd - T))
+            rec_hi = _math.floor(w_max / (nd - T - 1))
+            rec = (f"명단 인원을 {rec_lo}명" if rec_lo == rec_hi
+                   else f"명단 인원을 {rec_lo}~{rec_hi}명") if rec_lo <= rec_hi else "패턴/액팅 일수"
+            direction = "많습니다" if w_max < need_lo else "적습니다"
+            return (
+                f"운영 모드 인원 불일치: 현재 명단 {n}명이 이 규칙에 비해 {direction}.\n"
+                f"· 이번 달 오프 기준 {T}~{T + 1}개를 지키려면 총 근무 {need_lo}~{need_hi}일이 "
+                f"필요한데, 일별 정확 인원 규칙"
+                f"{'(액팅 ' + str(a) + '일)' if a is not None else ''}으로는 "
+                f"{w_min}~{w_max}일만 가능합니다.\n"
+                f"권장 조치:\n"
+                f"① {rec}으로 조정하세요 (이 규칙에 맞는 인원).\n"
+                f"② 또는 액팅 일수를 조정해 보세요 (액팅 1일 = 총 근무 1일 감소).\n"
+                f"③ 인원을 바꿀 수 없다면 '정확 인원 패턴 고정' 체크를 해제하고 생성하세요."
+            )
     return None
 
 
@@ -859,8 +895,14 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
             num_days=nd,
             schedules=[],
             unmet_preferences=0,
-            message="주어진 제약조건을 모두 만족하는 근무표를 찾지 못했습니다. "
-            "최소 인원이나 연속근무 제한 등을 완화해 보세요.",
+            message="주어진 제약조건을 모두 만족하는 근무표를 찾지 못했습니다.\n"
+            "자주 있는 원인:\n"
+            "① 같은 팀의 원티드 오프가 같은 날에 과도하게 몰림\n"
+            "② '단독근무 가능' 인원이 팀별 D/E/N을 매일 채우기에 부족\n"
+            "③ 전월 이월(월말 연속근무·나이트)로 월초 배정이 막힘\n"
+            "④ 나이트 가능 인원 부족 또는 사전 확정 휴무 과다\n"
+            "권장 조치: 원티드·사전배정을 일부 조정하거나, 명단의 단독근무·나이트 설정을 "
+            "확인한 뒤 다시 생성해 보세요.",
         )
 
     # ---- 결과 추출 ----

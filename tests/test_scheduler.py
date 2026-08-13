@@ -459,6 +459,28 @@ def test_exact_mode_night_band_fairness():
     assert max(nights) - min(nights) <= 1   # 자동 밴드 [2,3] → 폭 1
 
 
+def test_opmode_arithmetic_diagnosis():
+    """운영 모드 인원 산술 불일치를 사전 진단하고 권장 인원을 안내한다.
+
+    24명 + D4E4N4M1/D5E5N4 + 2026-08(오프 11~12)은 총근무 456~480일이 필요하지만
+    패턴상 최대 434일 → 즉시 INFEASIBLE + 원인/권장 메시지 (풀이 없이 바로 반환).
+    """
+    pats = [{"D": 4, "E": 4, "N": 4, "M": 1}, {"D": 5, "E": 5, "N": 4, "M": 0}]
+    req = ScheduleRequest(year=2026, month=8, holidays=[15, 17], nurses=_nurses(24),
+                          daily_patterns=pats, acting_days=8, exact_mode=True,
+                          time_limit_seconds=5)
+    res = solve(req)
+    assert not res.feasible and res.status == "INFEASIBLE"
+    assert "운영 모드 인원 불일치" in res.message
+    assert "22명" in res.message  # 이 규칙에 맞는 권장 인원
+    # 22명이면 진단을 통과한다(사전 차단 안 됨)
+    req22 = ScheduleRequest(year=2026, month=8, holidays=[15, 17], nurses=_nurses(22),
+                            daily_patterns=pats, acting_days=8, exact_mode=True,
+                            time_limit_seconds=5)
+    res22 = solve(req22)
+    assert "운영 모드 인원 불일치" not in (res22.message or "")
+
+
 def test_daily_patterns_exact_counts():
     """daily_patterns: 매일 인원이 허용 패턴과 '정확' 일치(초과·미달 불가)."""
     pats = [{"D": 2, "E": 2, "N": 2, "M": 1}, {"D": 3, "E": 3, "N": 2, "M": 0}]
