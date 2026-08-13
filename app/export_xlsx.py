@@ -36,6 +36,11 @@ def _norm(lab: str) -> str:
     return lab if lab in ("D", "E", "N", "M", "O") else ("M" if lab in ("M/D", "M/E") else "O")
 
 
+def _team_label(t: int) -> str:
+    """팀 표시 이름: 1→A팀, 2→B팀, 3→C팀 (그 외 숫자는 그대로)."""
+    return (["A", "B", "C"][t - 1] if 1 <= t <= 3 else str(t)) + "팀"
+
+
 def build_xlsx(req: ExportRequest) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -94,7 +99,7 @@ def build_xlsx(req: ExportRequest) -> bytes:
     for s in rows:
         t = teams.get(s.name, 9)
         nm = ws.cell(r, 1, s.name); nm.font = Font(name=AR, bold=True, size=10); nm.border = border
-        tc = ws.cell(r, 2, f"{t}팀"); tc.font = Font(name=AR, size=9, color="3730A3"); tc.alignment = center; tc.border = border
+        tc = ws.cell(r, 2, _team_label(t)); tc.font = Font(name=AR, size=9, color="3730A3"); tc.alignment = center; tc.border = border
         if prev is not None and t != prev:
             for cc in range(1, 8 + nd):
                 cur = ws.cell(r, cc)
