@@ -186,6 +186,7 @@
     <div class="card">
       <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 위→아래 = 경력순 (드래그 또는 ▲▼로 순서 변경)</span>
         <span style="margin-left:auto;display:flex;gap:6px">
+          <button class="sm ghost" onclick="resetRoster()" title="61병동 기본 명단(22명)으로 되돌리기">↺ 기본 명단</button>
           <button class="sm" onclick="saveRoster()">💾 명단 저장</button></span></h2>
       <div id="rosterMsg" class="hint" style="min-height:14px"></div>
       <div id="rosterSections"></div>
@@ -496,15 +497,26 @@ let roster = []; // {id, name, team, rank, night, trainee, trainer, account}
 let wardUsers = []; // [{email,name,role}] — 계정 연결 드롭다운용
 let MY_NURSE = null; // 현재 사용자와 연결된 명단 간호사
 function seedRoster() {
-  // 3팀 × 8명 = 24명 (경력순위 1=최고참). D/E/N=4명 정원을 충족할 실규모 예시.
+  // 61병동 실제 명단 22명 (A 8 · B 6 · C 8, 위=고참). 세 번째 값 = 단독근무
+  // ("none"=모두 불가, "night"=나이트만 단독 가능 — 파트장 확인 사항 반영).
   const names = [
-    ["장현진",1],["김도연",1],["이수민",1],["박서윤",1],["한지민",1],["오세영",1],["문가은",1],["백주원",1],
-    ["안현영",2],["최민수",2],["정예은",2],["신다혜",2],["강하늘",2],["류지원",2],["조은비",2],["윤채아",2],
-    ["신유진",3],["윤지호",3],["임채원",3],["권나래",3],["황도현",3],["서예린",3],["남태희",3],["고은솔",3],
+    ["신유진",1],["이정욱",1],["장예진",1],["한지호",1],["한지원",1],["권희원",1],
+    ["구민주",1,"night"],["강유빈",1,"none"],
+    ["장현진",2],["한혜수",2],["정서인",2],["문수연",2],["유현석",2],["유수미",2,"night"],
+    ["안현영",3],["채수빈",3],["이지은",3],["김유진",3],["강고은",3],["성시은",3],
+    ["강소영",3,"none"],["양연주",3,"none"],
   ];
-  roster = names.map(([name, team]) => ({
+  roster = names.map(([name, team, solo]) => ({
     id: genId(), name, team, night: true, trainee: false, trainer: "", account: "",
+    solo: solo || "all",
   }));
+}
+// 저장된 명단을 61병동 기본 명단으로 되돌리기 (저장 버튼을 눌러야 서버에 반영)
+function resetRoster() {
+  if (!confirm("현재 명단을 지우고 61병동 기본 명단(22명)으로 되돌릴까요?\n\"명단 저장\"을 눌러야 서버에 반영됩니다.")) return;
+  seedRoster();
+  renderRoster();
+  rosterMsg("61병동 기본 명단(22명)을 불러왔습니다 — 확인 후 \"명단 저장\"을 눌러주세요.");
 }
 function addNurse(team) { roster.push({ id: genId(), name: "", team: team || 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
 function accountOptions(sel) {
