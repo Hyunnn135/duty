@@ -350,8 +350,8 @@ async function submitAuth() {
     : { email, password: pw };
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const data = await res.json();
-    if (!res.ok) { authError(data.detail || "실패했습니다"); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { authError(data.detail || ("서버 오류 (" + res.status + ") — 잠시 후 다시 시도해 주세요")); return; }
     localStorage.setItem("duty_token", data.token);
     ME = { name: data.name, role: data.role, ward: data.ward };
     onAuthed();
