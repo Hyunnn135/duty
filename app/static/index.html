@@ -325,6 +325,16 @@
   </div>
 </div>
 
+<!-- 근무표 생성 불가 안내 팝업 -->
+<div id="genErrModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;align-items:center;justify-content:center;padding:20px">
+  <div class="card" style="max-width:520px;width:100%;max-height:80vh;overflow-y:auto">
+    <h2 style="margin-top:0;color:var(--err)">⚠️ 근무표를 만들 수 없습니다</h2>
+    <div id="genErrMsg" style="white-space:pre-line;font-size:13.5px;line-height:1.7;background:var(--errbg);color:var(--err);border-radius:8px;padding:12px 14px"></div>
+    <div class="hint" style="margin-top:10px">위 안내대로 조정한 뒤 다시 "근무표 생성"을 눌러주세요. 해결이 어려우면 운영자에게 문의하세요.</div>
+    <div class="row" style="margin-top:12px"><button class="sm" onclick="closeGenErr()">확인</button></div>
+  </div>
+</div>
+
 <script>
 /* ============================ 인증 ============================ */
 let regMode = false, ME = null;
@@ -849,15 +859,27 @@ async function generate() {
     if (res.status === 422) throw new Error("입력값 오류: " + JSON.stringify(data.detail).slice(0,200));
     if (!res.ok) throw new Error((data && data.detail ? JSON.stringify(data.detail).slice(0,200) : ("서버 오류 " + res.status)));
     if (!data.schedules) throw new Error("근무표 응답이 올바르지 않습니다.");
+    if (!data.feasible) {
+      genState.textContent = "❌ 생성 불가";
+      showGenErr(data.message || "제약조건을 만족하는 근무표가 없습니다.");
+      return;
+    }
     SCHED = { ...data, year: payload.year, month: payload.month, holidays: payload.holidays||[],
       teams: Object.fromEntries(payload.nurses.map(n=>[n.name,n.team])),
       carry_over: payload.carry_over, nurseIds: Object.fromEntries(payload.nurses.map(n=>[n.name,n.id])) };
     store();
-    genState.textContent = data.feasible ? "✅ 완료" : "❌ 실패";
+    genState.textContent = "✅ 완료";
     switchTab("board"); renderBoard();
   } catch (e) { genState.textContent = "요청 실패: " + e.message; }
   finally { btn.disabled = false; btn.textContent = "근무표 생성"; }
 }
+
+/* 생성 불가 안내 팝업 */
+function showGenErr(msg) {
+  document.getElementById("genErrMsg").textContent = msg;
+  document.getElementById("genErrModal").style.display = "flex";
+}
+function closeGenErr() { document.getElementById("genErrModal").style.display = "none"; }
 
 /* ============================ 여러 안 생성(품질 수렴 집합) ============================ */
 let CANDS = [], CAND_PAYLOAD = null;
@@ -870,7 +892,11 @@ async function generateCandidates() {
   candBox.innerHTML = "";
   try {
     const data = await api("POST", "/api/schedule/candidates?count=3", payload);
-    if (!data.feasible || !data.candidates.length) { genState.textContent = "❌ " + esc(data.message || "실패"); return; }
+    if (!data.feasible || !data.candidates.length) {
+      genState.textContent = "❌ 생성 불가";
+      showGenErr((data.candidates && data.candidates[0] && data.candidates[0].message) || data.message || "제약조건을 만족하는 근무표가 없습니다.");
+      return;
+    }
     CANDS = data.candidates;
     genState.textContent = `✅ ${data.count}개 후보 생성`;
     let html = `<div class="card"><h2 style="font-size:14px">🎲 후보 선택 <span class="sub">${esc(data.message)}</span></h2>`;
