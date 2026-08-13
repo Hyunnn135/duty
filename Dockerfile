@@ -16,13 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 애플리케이션 코드
 COPY app ./app
 
-# 비-root 실행 + 데이터 디렉터리(볼륨 미마운트 시에도 동작)
-RUN useradd -m appuser \
-    && mkdir -p /data \
-    && chown -R appuser:appuser /app /data
-USER appuser
+# 데이터 디렉터리(볼륨 미마운트 시에도 동작).
+# Railway 등은 볼륨을 root 소유로 마운트해 비-root 프로세스가 /data에 쓸 수 없다
+# (SQLite 생성 실패 → 가입/저장 500). 컨테이너 격리 하에 root로 실행해 호환성을 확보한다.
+RUN mkdir -p /data
 
 EXPOSE 8080
 
-# Cloud Run이 주입하는 $PORT를 따른다. OR-Tools 임포트로 콜드스타트 ~8초.
+# Cloud Run/Railway가 주입하는 $PORT를 따른다. OR-Tools 임포트로 콜드스타트 ~8초.
 CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
