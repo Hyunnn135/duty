@@ -63,6 +63,14 @@
   .rtable th { background: #f8fafc; font-size: 12px; }
   .rtable input, .rtable select { padding: 5px 6px; font-size: 12.5px; }
   .rtable td.chk { text-align: center; }
+  /* iOS 스타일 드래그 정렬 */
+  .drag-handle { cursor: grab; touch-action: none; user-select: none; }
+  #rosterSections tr[data-rid] { background: #fff; }
+  #rosterSections tr[data-rid] { will-change: transform; }
+  tr.drag-lift { position: relative; z-index: 20; }
+  tr.drag-lift td { background: #fff; box-shadow: 0 8px 20px rgba(15,23,42,.22); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  tr.drag-lift .drag-handle { cursor: grabbing; color: var(--d) !important; }
+  body.dragging-roster { user-select: none; cursor: grabbing; }
   .pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #e0e7ff; color: #3730a3; font-weight: 600; }
   .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
   .tabs button { background: #fff; color: #475569; border: 1px solid var(--border); }
@@ -499,7 +507,6 @@ function accountOptions(sel) {
 // 팀 표시 이름: 1→A팀, 2→B팀, 3→C팀
 function teamName(t) { return (["A","B","C"][t-1] || t) + "팀"; }
 // 팀별 섹션 렌더링. 배열 순서(팀 내) = 경력순(위=고참). ⠿ 드래그 또는 ▲▼로 순서·팀 변경.
-let _dragIdx = null;
 function renderRoster() {
   const box = document.getElementById("rosterSections");
   if (!box) return;
@@ -523,20 +530,15 @@ function renderRoster() {
       </tr></thead>`;
     const tbody = document.createElement("tbody");
     tbody.dataset.team = team;
-    tbody.addEventListener("dragover", e => e.preventDefault());
-    tbody.addEventListener("drop", e => { e.preventDefault(); moveNurse(_dragIdx, team, null); });
     idxs.forEach((i, pos) => {
       const r = roster[i];
       const tr = document.createElement("tr");
-      tr.draggable = true;
-      tr.addEventListener("dragstart", () => { _dragIdx = i; });
-      tr.addEventListener("dragover", e => { e.preventDefault(); e.stopPropagation(); });
-      tr.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); moveNurse(_dragIdx, team, i); });
+      tr.dataset.rid = r.id;
       const others = roster.filter((_, j) => j !== i && roster[j].name).map(n => n.name);
       const soloOpts = [["all","모두 가능"],["night","나이트만"],["de","데이·이브만"],["none","모두 불가"]]
         .map(([v,l]) => `<option value="${v}" ${v===(r.solo||"all")?"selected":""}>${l}</option>`).join("");
       tr.innerHTML =
-        `<td class="chk" style="cursor:grab;color:#94a3b8" title="드래그로 이동">⠿</td>` +
+        `<td class="chk drag-handle" style="color:#94a3b8" title="드래그로 순서·팀 이동" onpointerdown="dragStart(event)">⠿</td>` +
         `<td class="chk" style="color:#64748b;font-weight:600">${pos + 1}</td>` +
         `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
         `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
@@ -556,25 +558,120 @@ function renderRoster() {
     box.appendChild(sec);
   }
 }
-// from(전역 인덱스)을 팀 team의 before(전역 인덱스, null=팀 맨 끝) 앞으로 이동
-function moveNurse(from, team, before) {
-  if (from == null) { _dragIdx = null; return; }
-  const [item] = roster.splice(from, 1);
-  item.team = team;
-  if (before == null) roster.push(item);  // 배열 끝 = 해당 팀 섹션의 맨 아래
-  else roster.splice(from < before ? before - 1 : before, 0, item);
-  _dragIdx = null;
+/* ---- iOS 스타일 드래그 정렬: 잡으면 떠오르고, 다른 행이 실시간으로 비켜주고, 놓으면 안착 ---- */
+let DRAG = null; // {row, grabOff}
+function dragStart(e) {
+  if (e.button !== undefined && e.button !== 0) return;
+  const row = e.target.closest("tr");
+  if (!row) return;
+  DRAG = { row, grabOff: e.clientY - row.getBoundingClientRect().top };
+  row.classList.add("drag-lift");
+  document.body.classList.add("dragging-roster");
+  // 캡처 대신 window 리스너 사용: 행이 다른 팀 표로 재부착될 때 크롬이 포인터 캡처를
+  // 놓아버려 드롭 이벤트가 유실되는 문제를 회피한다.
+  window.addEventListener("pointermove", _dragMove);
+  window.addEventListener("pointerup", _dragEnd);
+  window.addEventListener("pointercancel", _dragEnd);
+  e.preventDefault();
+}
+// 떠 있는 행을 포인터 아래에 유지 (DOM 이동 후 자연 위치 기준으로 보정)
+function _setLiftY(clientY) {
+  const row = DRAG.row;
+  row.style.transition = "none";
+  row.style.transform = "";
+  const nat = row.getBoundingClientRect().top;
+  row.style.transform = `translateY(${clientY - DRAG.grabOff - nat}px)`;
+}
+function _dragMove(e) {
+  if (!DRAG) return;
+  const row = DRAG.row;
+  // 포인터가 가리키는 삽입 위치(세 팀 표 전체에서) 탐색
+  let target = null;
+  for (const tb of document.querySelectorAll("#rosterSections tbody")) {
+    const rect = tb.closest("table").getBoundingClientRect();
+    if (e.clientY < rect.top || e.clientY > rect.bottom) continue;
+    let before = null;
+    for (const r of tb.children) {
+      if (r === row) continue;
+      const rr = r.getBoundingClientRect();
+      if (e.clientY < rr.top + rr.height / 2) { before = r; break; }
+    }
+    target = { tbody: tb, before };
+    break;
+  }
+  // 위치가 바뀌면 DOM을 즉시 옮기고, 밀려나는 행들을 FLIP으로 스르륵 이동
+  if (target && (row.parentElement !== target.tbody || row.nextElementSibling !== target.before)) {
+    const others = [...document.querySelectorAll("#rosterSections tbody tr")].filter(r => r !== row);
+    const first = new Map(others.map(r => [r, r.getBoundingClientRect().top]));
+    target.tbody.insertBefore(row, target.before);
+    for (const r of others) {
+      const dy = first.get(r) - r.getBoundingClientRect().top;
+      if (Math.abs(dy) < 1) { r.style.transition = ""; r.style.transform = ""; continue; }
+      r.style.transition = "none";
+      r.style.transform = `translateY(${dy}px)`;
+      r.getBoundingClientRect();  // reflow 강제
+      r.style.transition = "transform .18s ease";
+      r.style.transform = "";
+    }
+  }
+  _setLiftY(e.clientY);
+}
+function _dragEnd(e) {
+  if (!DRAG) return;
+  const row = DRAG.row;
+  DRAG = null;
+  window.removeEventListener("pointermove", _dragMove);
+  window.removeEventListener("pointerup", _dragEnd);
+  window.removeEventListener("pointercancel", _dragEnd);
+  document.body.classList.remove("dragging-roster");
+  // 제자리로 스르륵 안착 후 배열에 확정
+  row.style.transition = "transform .16s ease";
+  row.style.transform = "";
+  setTimeout(() => {
+    row.classList.remove("drag-lift");
+    row.style.transition = "";
+    _commitDomOrder();
+  }, 180);
+}
+// 현재 DOM 순서(팀 tbody별 행 순서) → roster 배열로 확정
+function _commitDomOrder() {
+  const byId = Object.fromEntries(roster.map(r => [r.id, r]));
+  const next = [];
+  for (const tb of document.querySelectorAll("#rosterSections tbody")) {
+    const team = +tb.dataset.team;
+    for (const tr of tb.children) {
+      const r = byId[tr.dataset.rid];
+      if (r) { r.team = team; next.push(r); }
+    }
+  }
+  if (next.length === roster.length) roster = next;
   renderRoster();
 }
-// 같은 팀 안에서 한 칸 위/아래
+// 같은 팀 안에서 한 칸 위/아래 (FLIP 애니메이션)
 function nudgeNurse(i, dir) {
   const r = roster[i];
   const idxs = roster.map((x, j) => [x, j]).filter(([x]) => x.team === r.team).map(([, j]) => j);
   const pos = idxs.indexOf(i);
   const swap = idxs[pos + dir];
   if (swap == null) return;
-  [roster[i], roster[swap]] = [roster[swap], roster[i]];
-  renderRoster();
+  flipRoster(() => { [roster[i], roster[swap]] = [roster[swap], roster[i]]; renderRoster(); });
+}
+// 변경 전 위치를 기억했다가, 재렌더 후 각 행이 이전 위치에서 스르륵 이동해오게(FLIP)
+function flipRoster(mutate) {
+  const first = new Map([...document.querySelectorAll("#rosterSections tr[data-rid]")]
+    .map(r => [r.dataset.rid, r.getBoundingClientRect().top]));
+  mutate();
+  for (const r of document.querySelectorAll("#rosterSections tr[data-rid]")) {
+    const f = first.get(r.dataset.rid);
+    if (f == null) continue;
+    const dy = f - r.getBoundingClientRect().top;
+    if (Math.abs(dy) < 1) continue;
+    r.style.transition = "none";
+    r.style.transform = `translateY(${dy}px)`;
+    r.getBoundingClientRect();
+    r.style.transition = "transform .2s ease";
+    r.style.transform = "";
+  }
 }
 // 단독근무 코드("all"/"night"/"de"/"none") ↔ (solo_day, solo_evening, solo_night) 변환
 function soloFlags(code) {
