@@ -464,7 +464,7 @@ def submit_wanted(
     if body.end_day < body.start_day:
         raise HTTPException(422, "종료일은 시작일 이상이어야 합니다.")
     if body.end_day - body.start_day + 1 > 3:
-        raise HTTPException(422, "연속 오프 신청은 최대 3일까지 가능합니다 (대원칙 E4).")
+        raise HTTPException(422, "원티드 신청은 한 건당 최대 3일까지 가능합니다.")
     last_day = calendar.monthrange(body.year, body.month)[1]
     if body.end_day > last_day:
         raise HTTPException(422, f"{body.year}년 {body.month}월은 {last_day}일까지입니다.")

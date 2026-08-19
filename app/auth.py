@@ -71,65 +71,87 @@ def _conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
     if path not in _INITED_DBS:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                empno TEXT UNIQUE,
-                email TEXT UNIQUE,
-                name TEXT NOT NULL,
-                role TEXT NOT NULL,
-                ward TEXT DEFAULT '',
-                pw_hash TEXT NOT NULL,
-                salt TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )"""
-        )
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
-        if "empno" not in cols:
-            # 구 스키마(email NOT NULL, empno 없음) → 사번 도입 스키마로 1회 재구축.
-            # 기존 계정은 empno=NULL로 이전되며 이메일 로그인이 계속 동작한다.
-            # 쓰기 락(BEGIN IMMEDIATE) 아래에서 다시 확인(이중 확인 잠금) — 두 워커가
-            # 동시에 진입해도 한쪽만 재구축하고, 그 사이 등록된 empno가 empno 없는
-            # INSERT-SELECT 복사에 지워지는 일이 없게 한다.
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
-                if "empno" not in cols2:
-                    conn.execute(
-                        """CREATE TABLE users_v2 (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            empno TEXT UNIQUE,
-                            email TEXT UNIQUE,
-                            name TEXT NOT NULL,
-                            role TEXT NOT NULL,
-                            ward TEXT DEFAULT '',
-                            pw_hash TEXT NOT NULL,
-                            salt TEXT NOT NULL,
-                            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                        )"""
-                    )
-                    conn.execute(
-                        "INSERT INTO users_v2 (id, email, name, role, ward, pw_hash, "
-                        "salt, created_at) SELECT id, email, name, role, ward, pw_hash, "
-                        "salt, created_at FROM users"
-                    )
-                    conn.execute("DROP TABLE users")
-                    conn.execute("ALTER TABLE users_v2 RENAME TO users")
-                conn.commit()
-            except sqlite3.Error:
-                conn.rollback()
-                raise
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS ward_invites (
-                ward TEXT PRIMARY KEY,
-                code TEXT UNIQUE NOT NULL,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )"""
-        )
-        conn.commit()
-        _INITED_DBS.add(path)
+        try:
+            _init_db(conn)
+            _INITED_DBS.add(path)
+        except Exception:
+            conn.close()  # 초기화 실패 시 연결(WAL 핸들) 누수 방지
+            raise
     return conn
+
+
+def _init_db(conn: sqlite3.Connection) -> None:
+    """스키마 생성·마이그레이션 (DB 경로별 1회, _conn에서 호출)."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            empno TEXT UNIQUE,
+            email TEXT UNIQUE,
+            name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            ward TEXT DEFAULT '',
+            pw_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    if "empno" not in cols:
+        # 구 스키마(email NOT NULL, empno 없음) → 사번 도입 스키마로 1회 재구축.
+        # 기존 계정은 empno=NULL로 이전되며 이메일 로그인이 계속 동작한다.
+        # 쓰기 락(BEGIN IMMEDIATE) 아래에서 다시 확인(이중 확인 잠금) — 두 워커가
+        # 동시에 진입해도 한쪽만 재구축하고, 그 사이 등록된 empno가 empno 없는
+        # INSERT-SELECT 복사에 지워지는 일이 없게 한다.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+            if "empno" not in cols2:
+                conn.execute(
+                    """CREATE TABLE users_v2 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        empno TEXT UNIQUE,
+                        email TEXT UNIQUE,
+                        name TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        ward TEXT DEFAULT '',
+                        pw_hash TEXT NOT NULL,
+                        salt TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )"""
+                )
+                conn.execute(
+                    "INSERT INTO users_v2 (id, email, name, role, ward, pw_hash, "
+                    "salt, created_at) SELECT id, email, name, role, ward, pw_hash, "
+                    "salt, created_at FROM users"
+                )
+                conn.execute("DROP TABLE users")
+                conn.execute("ALTER TABLE users_v2 RENAME TO users")
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+    # 대문자 정규화 이전 커밋으로 저장됐을 수 있는 소문자 사번을 1회 정규화(방어적)
+    # — 조회·중복검사·명단 매칭이 모두 대문자 기준이므로 저장 데이터도 맞춘다.
+    try:
+        conn.execute(
+            "UPDATE users SET empno=UPPER(empno) "
+            "WHERE empno IS NOT NULL AND empno <> UPPER(empno)")
+        conn.execute(
+            "UPDATE wanted_requests SET nurse_email=UPPER(nurse_email) "
+            "WHERE nurse_email NOT LIKE '%@%' AND nurse_email <> UPPER(nurse_email)")
+    except sqlite3.IntegrityError:
+        pass  # 대소문자 변형 중복 계정(비정상 데이터)은 수동 해소 — 초기화는 계속
+    except sqlite3.OperationalError:
+        pass  # wanted 테이블 미생성(첫 실행)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ward_invites (
+            ward TEXT PRIMARY KEY,
+            code TEXT UNIQUE NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.commit()
 
 
 # 혼동 문자(0/O, 1/I/L) 제외한 8자리 초대 코드
@@ -538,8 +560,8 @@ def set_empno(
                     if changed:
                         conn.execute("UPDATE rosters SET data=? WHERE ward=?",
                                      (_json.dumps(nurses, ensure_ascii=False), user.ward))
-            except (sqlite3.OperationalError, ValueError):
-                pass  # 명단 미저장/파싱 불가 — 이관할 것 없음
+            except (sqlite3.OperationalError, ValueError, TypeError, AttributeError):
+                pass  # 명단 미저장/구조 손상 — 이관 생략(사번 등록 자체는 계속)
         conn.commit()
         u = conn.execute("SELECT * FROM users WHERE id=?", (me["id"],)).fetchone()
         return _user_info(u)
