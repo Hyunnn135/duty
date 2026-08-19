@@ -69,7 +69,9 @@ def send_email(to: str | list[str], subject: str, body: str) -> bool:
         return False
     msg = EmailMessage()
     msg["From"] = c["from"]
-    msg["To"] = ", ".join(recipients)
+    # 단체 발송 시 수신자 주소가 서로 노출되지 않도록 To에는 발신자만 적고
+    # 실제 수신자는 봉투(to_addrs)로만 전달한다(BCC 방식).
+    msg["To"] = recipients[0] if len(recipients) == 1 else c["from"]
     msg["Subject"] = subject
     msg.set_content(body)
     try:
@@ -78,14 +80,14 @@ def send_email(to: str | list[str], subject: str, body: str) -> bool:
             with smtplib.SMTP_SSL(c["host"], c["port"], timeout=10, context=ctx) as s:
                 if c["user"]:
                     s.login(c["user"], c["password"])
-                s.send_message(msg)
+                s.send_message(msg, to_addrs=recipients)
         else:
             with smtplib.SMTP(c["host"], c["port"], timeout=10) as s:
                 if c["starttls"]:
                     s.starttls(context=ctx)
                 if c["user"]:
                     s.login(c["user"], c["password"])
-                s.send_message(msg)
+                s.send_message(msg, to_addrs=recipients)
         log.info("이메일 전송: %s → %d명", subject, len(recipients))
         return True
     except Exception as e:  # 전송 실패가 요청을 깨지 않도록

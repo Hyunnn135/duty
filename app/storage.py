@@ -19,7 +19,7 @@ import calendar
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -68,12 +68,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 한국 표준시 — 사용자는 KST 기준으로 기간을 입력한다(서머타임 없음 → 고정 오프셋).
+KST = timezone(timedelta(hours=9))
+
+
 def _parse_bound(s: str | None, *, end_of_day: bool) -> datetime | None:
     """신청기간 경계값을 tz-aware datetime으로 파싱(문자열 사전식 비교 버그 방지).
 
     - 날짜만("2026-08-10") 오면 opens는 자정, closes는 그날 끝(23:59:59)으로 보정
       → 마감일 하루 종일 열려 있도록.
-    - 시간대 없는 값은 UTC로 간주(_now()와 일관). 파싱 실패 시 None(경계 없음).
+    - 시간대 없는 값은 **한국 시간(KST)** 으로 간주 — 부서장이 입력한 날짜가 UTC로
+      해석되면 공지한 마감과 9시간 어긋난다. 파싱 실패 시 None(경계 없음).
     """
     s = (s or "").strip()
     if not s:
@@ -88,13 +93,22 @@ def _parse_bound(s: str | None, *, end_of_day: bool) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=KST)
     return dt
 
 
+# DDL은 DB 경로별 1회만 실행한다(매 요청 스키마 파싱/락 오버헤드 제거).
+_INITED_DBS: set[str] = set()
+
+
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    path = _db_path()
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    if path in _INITED_DBS:
+        return conn
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS rosters (
@@ -149,6 +163,7 @@ def _conn() -> sqlite3.Connection:
         );
         """
     )
+    _INITED_DBS.add(path)
     return conn
 
 
@@ -196,7 +211,7 @@ class WantedSubmit(BaseModel):
     start_day: int = Field(..., ge=1, le=31)
     end_day: int = Field(..., ge=1, le=31)
     shift: str = Field("O")
-    reason: str = ""
+    reason: str = Field("", max_length=500)
 
     def clean_shift(self) -> str:
         return self.shift if self.shift in ("D", "E", "N", "O") else "O"
@@ -264,9 +279,14 @@ EXPIRED_MSG = "신청 기한이 만료되었습니다. 추가 수정 필요 시 
 router = APIRouter(prefix="/api", tags=["storage"])
 
 
+# 부서원 조회에 공개하는 속성 화이트리스트 — 부서장이 명단에 새 속성을 추가해도
+# 기본은 비공개가 되도록 블랙리스트가 아닌 화이트리스트로 거른다.
+PUBLIC_NURSE_FIELDS = ("id", "name", "team")
+
+
 def _public_nurse(n: dict[str, Any]) -> dict[str, Any]:
-    """부서원용: 민감 속성 제거."""
-    return {k: v for k, v in n.items() if k not in SENSITIVE_NURSE_FIELDS}
+    """부서원용: 공개 속성만 노출."""
+    return {k: n[k] for k in PUBLIC_NURSE_FIELDS if k in n}
 
 
 # ---- 명단(roster) ----
@@ -546,6 +566,13 @@ def set_window(
     body: WindowPayload,
     user: Annotated[UserInfo, Depends(require_roles("admin", "master"))],
 ) -> WindowStatus:
+    # 파싱 불가한 경계값은 '기간 없음'으로 조용히 무시되므로(마감이 영영 안 닫힘)
+    # 저장 전에 명시적으로 거부한다.
+    for label, val in (("시작", body.opens_at), ("마감", body.closes_at)):
+        if (val or "").strip() and _parse_bound(val, end_of_day=False) is None:
+            raise HTTPException(
+                422, f"신청 {label} 일시 형식이 올바르지 않습니다 (예: 2026-08-10 또는 "
+                     f"2026-08-10T18:00). 입력값: {val}")
     conn = _conn()
     try:
         conn.execute(

@@ -2,11 +2,18 @@ name: CI
 
 on:
   push:
+    branches: [main]  # PR 브랜치는 pull_request로만 돌려 이중 실행 방지
   pull_request:
+
+# 같은 브랜치에 새 푸시가 오면 이전 실행을 취소(러너 시간 절약)
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # 솔버 행(hang) 시 6시간 기본값 방지
     steps:
       - uses: actions/checkout@v4
 

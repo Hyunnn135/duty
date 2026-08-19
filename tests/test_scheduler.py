@@ -137,6 +137,7 @@ def test_prefer_request_honored_when_possible():
                 nurse_id="n0", day=3, shift=Shift.OFF, type=RequestType.PREFER
             )
         ],
+        num_workers=1, random_seed=7,  # 소프트 목적 정확 단언 → 결정적 탐색으로 고정
     )
     res = solve(req)
     assert res.feasible
@@ -306,7 +307,8 @@ def test_preceptor_pairing_preferred():
     nurses = _nurses(8)
     nurses[7] = Nurse(id="n7", name="신규", is_new=True, night_eligible=False,
                       preceptor_id="n0")
-    req = ScheduleRequest(num_days=7, nurses=nurses)
+    req = ScheduleRequest(num_days=7, nurses=nurses,
+                          num_workers=1, random_seed=7)  # 소프트 목적 단언 → 결정적 탐색
     res = solve(req)
     assert res.feasible
     by = {s.nurse_id: s for s in res.schedules}
@@ -324,7 +326,8 @@ def test_mid_avoids_senior_ranks():
     nurses = [
         Nurse(id=f"n{i}", name=f"간호사{i}", seniority_rank=i + 1) for i in range(8)
     ]
-    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms)
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms,
+                          num_workers=1, random_seed=7)  # 소프트 목적 단언 → 결정적 탐색
     res = solve(req)
     assert res.feasible
     senior_mids = sum(
@@ -540,3 +543,58 @@ def test_night_gap_avoids_short_night_returns():
     assert on.feasible
     # 중간에 데이/이브닝 근무 없이 오프만 하고 나이트로 복귀하는 짧은 텀이 없어야 한다
     assert _short_night_returns(on) == 0
+
+
+def test_nonnight_trainee_trainer_nights_not_blocked():
+    """미러링 회귀 가드: 나이트 불가 트레이니가 있어도 '교육자'는 나이트를 설 수 있다.
+
+    이전 구현은 N만 빼고 O를 미러해서, 교육자가 N인 날 트레이니에게 배정 가능한
+    근무가 없어(전부 0 + N 금지) 교육자의 나이트가 원천 봉쇄됐다 — 나이트 하드
+    밴드(전원 ≥1)와 결합하면 전체 INFEASIBLE. 지금은 교육자가 N인 날 트레이니가
+    자동으로 O가 된다.
+    """
+    ms = MinStaff(D=2, E=2, N=1)
+    nurses = _nurses(9)
+    nurses[8] = Nurse(id="n8", name="신규", is_trainee=True, trainer_id="n0",
+                      night_eligible=False)
+    req = ScheduleRequest(num_days=7, nurses=nurses, min_staff=ms,
+                          night_min_per_nurse=1)  # 교육자 포함 가능자 전원 나이트 ≥1 (하드)
+    res = solve(req)
+    assert res.feasible, res.message
+    by = {s.nurse_id: s for s in res.schedules}
+    assert sum(1 for d in range(7) if by["n0"].shifts[d] == Shift.NIGHT) >= 1
+    for d in range(7):
+        if by["n0"].shifts[d] == Shift.NIGHT:
+            assert by["n8"].shifts[d] == Shift.OFF
+
+
+def test_preflight_opmode_counts_preassigned_leave():
+    """운영 모드 사전 진단이 사전배정(연차)을 필요 근무에서 빼고 계산한다.
+
+    오프 하드 밴드(13d)는 '순수 O' 기준이라, 연차가 있으면 필요 근무일이 그만큼
+    줄어든다. 이를 무시하면 실제로는 풀 수 있는 달을 사전 진단이 잘못 거부한다.
+    """
+    from app.models import PreAssigned
+    from app.scheduler import _preflight
+    patterns = [{"D": 4, "E": 4, "N": 4, "M": 1}, {"D": 5, "E": 5, "N": 4, "M": 0}]
+    nurses = [Nurse(id=f"n{i}", name=f"간호사{i}", team=(i % 3) + 1) for i in range(23)]
+    base = dict(year=2026, month=8, holidays=[15, 17], nurses=nurses,
+                exact_mode=True, daily_patterns=patterns, acting_days=8)
+    # 연차 없음: 23명은 산술적으로 불가(총 근무 426 < 필요 437) → 진단 메시지
+    msg = _preflight(ScheduleRequest(**base))
+    assert msg is not None and "운영 모드 인원 불일치" in msg
+    # 연차 12일을 반영하면 필요 근무가 425~448로 줄어 겹친다 → 사전 진단 통과
+    pre = [PreAssigned(nurse_id=f"n{i}", day=i, code="HY") for i in range(12)]
+    msg2 = _preflight(ScheduleRequest(**base, pre_assigned=pre))
+    assert msg2 is None
+
+
+def test_forbid_request_day_out_of_range_rejected():
+    """기간 밖 requests(FORBID 포함)는 조용히 무시되지 않고 검증 오류를 낸다."""
+    import pytest
+    with pytest.raises(ValueError):
+        ScheduleRequest(
+            num_days=7, nurses=_nurses(3),
+            requests=[ShiftRequest(nurse_id="n0", day=7, shift=Shift.DAY,
+                                   type=RequestType.FORBID)],
+        )

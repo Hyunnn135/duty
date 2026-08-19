@@ -59,6 +59,7 @@ def _preflight(req: ScheduleRequest) -> str | None:
         if not (req.exclude_trainee_from_staffing and nu.is_trainee)
     )
     worst = 0
+    total_need = 0
     for d in range(req.num_days):
         st = req.staffing_for(d)
         if st is not None:
@@ -66,6 +67,7 @@ def _preflight(req: ScheduleRequest) -> str | None:
         else:
             total = sum(req.min_staff.get(s) for s in WORK_SHIFTS)
         worst = max(worst, total)
+        total_need += total
     if worst > n:
         return (
             f"하루 최소 필요 인원 합계({worst})가 간호사 수({n})보다 많아 "
@@ -73,7 +75,9 @@ def _preflight(req: ScheduleRequest) -> str | None:
         )
     if req.min_off_days > 0:
         max_work_slots = n * (req.num_days - req.min_off_days)
-        if worst * req.num_days > max_work_slots:
+        # 최악 하루가 아니라 실제 일별 필요 합으로 비교 — 주중/주말 혼합 인원에서
+        # 경계 근처의 풀 수 있는 입력을 잘못 거부하지 않도록.
+        if total_need > max_work_slots:
             return "min_off_days 설정이 너무 커서 최소 인원을 채울 수 없습니다."
 
     # 운영 모드(정확 인원 패턴 + 오프 하드 밴드) 산술 진단:
@@ -92,7 +96,23 @@ def _preflight(req: ScheduleRequest) -> str | None:
             w_max = a * max(act) + (nd - a) * max(non)
         else:
             w_min, w_max = nd * min(sizes), nd * max(sizes)
-        need_lo, need_hi = n * (nd - T - 1), n * (nd - T)
+        # 필요 근무 계산: (13d) 오프 밴드는 사전배정(연차 등)을 제외한 '순수 O' 기준
+        # → 인당 필요 근무 = nd - 사전배정일수 - (T_i+1 ~ T_i). 밴드 미적용 인원
+        # (트레이닝 신규, 목표 없음)은 0~(nd-사전배정)일로 상한만 기여한다.
+        pre_cnt: dict[str, int] = {}
+        for p in req.pre_assigned:
+            pre_cnt[p.nurse_id] = pre_cnt.get(p.nurse_id, 0) + 1
+        need_lo, need_hi = 0, 0
+        for nu in req.nurses:
+            if req.exclude_trainee_from_staffing and nu.is_trainee:
+                continue
+            L = pre_cnt.get(nu.id, 0)
+            Ti = None if nu.is_trainee else req.off_target_for(nu.id)
+            if Ti is None:
+                need_hi += max(0, nd - L)
+                continue
+            need_lo += max(0, nd - L - Ti - 1)
+            need_hi += max(0, nd - L - Ti)
         if w_max < need_lo or w_min > need_hi:
             import math as _math
             rec_lo = _math.ceil(w_min / (nd - T))
@@ -302,10 +322,13 @@ def solve(req: ScheduleRequest) -> ScheduleResponse:
         if not nurse.is_trainee or not nurse.trainer_id or nurse.trainer_id not in idx:
             continue
         t = idx[nurse.trainer_id]
-        # 트레이닝 신규가 나이트 불가면 나이트는 미러링에서 제외(교육자가 나이트인 날
-        # 강제 동행 시 나이트 금지와 충돌해 전체 INFEASIBLE이 되는 것을 방지).
+        # 트레이닝 신규가 나이트 불가면 나이트'와 오프' 둘 다 미러링에서 제외한다.
+        # N만 빼고 O를 미러하면 교육자가 N인 날 신규는 D/E/M/O 전부 0 + N 금지로
+        # 배정 가능한 근무가 사라져 교육자의 나이트 자체가 불가능해지고, 나이트
+        # 하드 밴드(13b)와 충돌하면 전체 INFEASIBLE이 된다. D/E/M만 미러하면
+        # 교육자가 N 또는 O인 날 신규는 (1)의 exactly-one에 의해 자동으로 O가 된다.
         mirror_shifts = ALL_SHIFTS if nurse.night_eligible else [
-            s for s in ALL_SHIFTS if s != Shift.NIGHT]
+            s for s in ALL_SHIFTS if s not in (Shift.NIGHT, Shift.OFF)]
         for d in days:
             if d in preassigned_days.get(j, set()):
                 continue

@@ -249,3 +249,30 @@ def test_feedback_to_master(client):
     # 읽음 처리
     rd = client.post(f"/api/feedback/{fb['id']}/read", headers=_h(master["token"]))
     assert rd.status_code == 200 and rd.json()["read_at"] is not None
+
+
+# ---- 신청 기간 KST 해석 ----
+
+def test_parse_bound_naive_is_kst():
+    """시간대 없는 경계값은 한국 시간(KST)으로 해석 — UTC 해석 시 9시간 어긋난다."""
+    from app.storage import KST, _parse_bound
+    b = _parse_bound("2026-08-10", end_of_day=True)
+    assert b == datetime(2026, 8, 10, 23, 59, 59, tzinfo=KST)
+    assert b.astimezone(timezone.utc) == datetime(
+        2026, 8, 10, 14, 59, 59, tzinfo=timezone.utc)
+    o = _parse_bound("2026-08-10T18:00", end_of_day=False)
+    assert o == datetime(2026, 8, 10, 18, 0, tzinfo=KST)
+    # 시간대가 명시된 값은 그대로 존중한다
+    z = _parse_bound("2026-08-10T09:00:00+00:00", end_of_day=False)
+    assert z == datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+
+
+def test_set_window_rejects_unparseable_bounds(client):
+    """파싱 불가한 경계값은 저장 전 422 — 조용히 '기간 없음'이 되면 마감이 안 닫힌다."""
+    admin = _reg(client, "m@duty.kr")
+    bad = {"year": 2026, "month": 9, "closes_at": "10/08/2026"}
+    assert client.put("/api/request-window", json=bad,
+                      headers=_h(admin["token"])).status_code == 422
+    ok = {"year": 2026, "month": 9, "closes_at": "2026-09-10"}
+    assert client.put("/api/request-window", json=ok,
+                      headers=_h(admin["token"])).status_code == 200

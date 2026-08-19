@@ -22,8 +22,8 @@ class ExportSchedule(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    year: int | None = None
-    month: int | None = None
+    year: int | None = Field(None, ge=2000, le=2100)
+    month: int | None = Field(None, ge=1, le=12)
     num_days: int = Field(31, ge=1, le=62)
     holidays: list[int] = Field(default_factory=list)
     teams: dict[str, int] = Field(default_factory=dict)
@@ -34,6 +34,13 @@ class ExportRequest(BaseModel):
 
 def _norm(lab: str) -> str:
     return lab if lab in ("D", "E", "N", "M", "O") else ("M" if lab in ("M/D", "M/E") else "O")
+
+
+def _set_text(cell, value) -> None:
+    """사용자 입력 문자열을 항상 '텍스트'로 기록 — '=' 등으로 시작해도 openpyxl이
+    수식으로 저장하지 않게 강제한다(수식 주입 차단)."""
+    cell.value = "" if value is None else str(value)
+    cell.data_type = "s"  # 값 대입이 '='로 시작하면 'f'(수식)로 추론하므로 되돌린다
 
 
 def _team_label(t: int) -> str:
@@ -70,10 +77,10 @@ def build_xlsx(req: ExportRequest) -> bytes:
     center = Alignment(horizontal="center", vertical="center")
 
     period = f"{req.year}년 {req.month}월 " if (req.year and req.month) else ""
-    ws["A1"] = req.title or f"{period}근무표"
+    _set_text(ws["A1"], req.title or f"{period}근무표")
     ws["A1"].font = Font(name=AR, size=13, bold=True)
     if req.subtitle:
-        ws["A2"] = req.subtitle
+        _set_text(ws["A2"], req.subtitle)
         ws["A2"].font = Font(name=AR, size=9, color="475569")
 
     HR = 4
@@ -98,7 +105,7 @@ def build_xlsx(req: ExportRequest) -> bytes:
     prev = None
     for s in rows:
         t = teams.get(s.name, 9)
-        nm = ws.cell(r, 1, s.name); nm.font = Font(name=AR, bold=True, size=10); nm.border = border
+        nm = ws.cell(r, 1); _set_text(nm, s.name); nm.font = Font(name=AR, bold=True, size=10); nm.border = border
         tc = ws.cell(r, 2, _team_label(t)); tc.font = Font(name=AR, size=9, color="3730A3"); tc.alignment = center; tc.border = border
         if prev is not None and t != prev:
             for cc in range(1, 8 + nd):
@@ -108,7 +115,7 @@ def build_xlsx(req: ExportRequest) -> bytes:
         for day in range(nd):
             lab = s.labels[day] if day < len(s.labels) else "O"
             base = _norm(lab)
-            cell = ws.cell(r, 3 + day, lab); cell.alignment = center; cell.border = border
+            cell = ws.cell(r, 3 + day); _set_text(cell, lab); cell.alignment = center; cell.border = border
             cell.font = Font(name=AR, bold=True, size=10, color=_COLOR.get(base, "BE185D"))
             if wknd(day):
                 cell.fill = wkfill
