@@ -202,6 +202,7 @@ class UserInfo(BaseModel):
     role: str
     ward: str
     empno: str = ""
+    uid: int = 0  # users.id — 사번/이메일과 무관한 안정적 내부 식별자
 
     def key(self) -> str:
         """데이터 연결용 계정 식별자 — 사번이 있으면 사번, 없으면(구계정) 이메일."""
@@ -253,7 +254,7 @@ def _make_token(user: sqlite3.Row) -> str:
 
 def _user_info(u: sqlite3.Row) -> UserInfo:
     return UserInfo(email=u["email"] or "", name=u["name"], role=u["role"],
-                    ward=u["ward"], empno=u["empno"] or "")
+                    ward=u["ward"], empno=u["empno"] or "", uid=u["id"])
 
 
 def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:
@@ -501,39 +502,58 @@ def set_empno(
     empno = body.empno.strip().upper()
     conn = _conn()
     try:
-        if user.empno:
+        # 확인·갱신을 쓰기 락으로 직렬화 — 동시 등록 경쟁이 500(UNIQUE 위반)이나
+        # 같은 계정의 이중 등록(먼저 이관된 신청 고아화)으로 새지 않게 한다.
+        conn.execute("BEGIN IMMEDIATE")
+        me = conn.execute("SELECT * FROM users WHERE id=?", (user.uid,)).fetchone()
+        if me is None:
+            raise HTTPException(401, "계정을 찾을 수 없습니다. 다시 로그인해 주세요.")
+        if me["empno"]:
             raise HTTPException(409, "이미 사번이 등록된 계정입니다.")
         taken = conn.execute("SELECT 1 FROM users WHERE empno=?", (empno,)).fetchone()
         if taken:
             raise HTTPException(409, "이미 가입된 사번입니다. 본인 사번이 맞는지 확인하세요.")
-        conn.execute("UPDATE users SET empno=? WHERE email=? AND ward=?",
-                     (empno, user.email, user.ward))
-        try:
-            conn.execute(
-                "UPDATE wanted_requests SET nurse_email=? WHERE nurse_email=? AND ward=?",
-                (empno, user.email, user.ward))
-        except sqlite3.OperationalError:
-            pass  # wanted 테이블이 아직 없으면(첫 사용) 이관할 것도 없다
-        # 명단의 계정 연결(account_email)도 새 식별자로 이관 — 파트장이 다시 저장하지
-        # 않아도 승인 신청 매칭·내 근무 연결이 끊기지 않게 한다.
-        try:
-            import json as _json
-            row = conn.execute(
-                "SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
-            if row:
-                nurses = _json.loads(row["data"])
-                changed = False
-                for n in nurses:
-                    if str(n.get("account_email", "")).strip().lower() == user.email.lower():
-                        n["account_email"] = empno
-                        changed = True
-                if changed:
-                    conn.execute("UPDATE rosters SET data=? WHERE ward=?",
-                                 (_json.dumps(nurses, ensure_ascii=False), user.ward))
-        except (sqlite3.OperationalError, ValueError):
-            pass  # 명단 미저장/파싱 불가 — 이관할 것 없음
+        conn.execute("UPDATE users SET empno=? WHERE id=?", (empno, me["id"]))
+        old_email = me["email"] or ""
+        if old_email:
+            try:
+                conn.execute(
+                    "UPDATE wanted_requests SET nurse_email=? WHERE nurse_email=? AND ward=?",
+                    (empno, old_email, user.ward))
+            except sqlite3.OperationalError:
+                pass  # wanted 테이블이 아직 없으면(첫 사용) 이관할 것도 없다
+            # 명단의 계정 연결(account_email)도 새 식별자로 이관 — 파트장이 다시
+            # 저장하지 않아도 승인 신청 매칭·내 근무 연결이 끊기지 않게 한다.
+            try:
+                import json as _json
+                row = conn.execute(
+                    "SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
+                if row:
+                    nurses = _json.loads(row["data"])
+                    changed = False
+                    for n in nurses:
+                        if str(n.get("account_email", "")).strip().lower() == old_email.lower():
+                            n["account_email"] = empno
+                            changed = True
+                    if changed:
+                        conn.execute("UPDATE rosters SET data=? WHERE ward=?",
+                                     (_json.dumps(nurses, ensure_ascii=False), user.ward))
+            except (sqlite3.OperationalError, ValueError):
+                pass  # 명단 미저장/파싱 불가 — 이관할 것 없음
         conn.commit()
-        u = conn.execute("SELECT * FROM users WHERE empno=?", (empno,)).fetchone()
+        u = conn.execute("SELECT * FROM users WHERE id=?", (me["id"],)).fetchone()
         return _user_info(u)
+    except HTTPException:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    except sqlite3.IntegrityError:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise HTTPException(409, "이미 가입된 사번입니다. 본인 사번이 맞는지 확인하세요.")
     finally:
         conn.close()

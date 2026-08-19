@@ -337,10 +337,18 @@ def my_nurse(user: Annotated[UserInfo, Depends(get_current_user)]) -> MyNurse:
         row = conn.execute("SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
         if not row:
             return MyNurse(linked=False)
-        mine = {k for k in (user.empno, user.email.lower()) if k}
+        my_email = user.email.lower()
         for n in json.loads(row["data"]):
             acc = str(n.get("account_email", "")).strip()
-            if acc and (acc in mine or acc.lower() in mine):
+            if not acc:
+                continue
+            # 이메일 연결은 소문자 비교, 사번 연결은 대문자 정규화 비교 — 사번에
+            # 이메일용 소문자 비교를 섞으면 안 된다(과거 대소문자 변형 계정으로
+            # 타인 정보가 열람되던 결함의 재발 방지).
+            if "@" in acc:
+                if my_email and acc.lower() == my_email:
+                    return MyNurse(linked=True, nurse=n)
+            elif user.empno and acc.upper() == user.empno:
                 return MyNurse(linked=True, nurse=n)
         return MyNurse(linked=False)
     finally:

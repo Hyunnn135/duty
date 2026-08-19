@@ -345,3 +345,57 @@ def test_legacy_db_schema_migrates(tmp_path, monkeypatch):
         "empno": "770001", "password": "password123", "name": "신규",
         "invite_code": inv.json()["code"]})
     assert r2.status_code == 200
+
+
+def test_empno_case_normalized_no_leak(client):
+    """대소문자 변형 사번은 같은 계정으로 취급(409) — 타인 명단 열람 결함 재발 방지."""
+    r = client.post("/api/auth/register", json={
+        "empno": "abc1", "password": "password123", "name": "가", "ward": "72"})
+    assert r.status_code == 200 and r.json()["empno"] == "ABC1"
+    dup = client.post("/api/auth/register", json={
+        "empno": "ABC1", "password": "password123", "name": "나",
+        "invite_code": _invite_code("72")})
+    assert dup.status_code == 409
+    # 소문자로도 로그인된다(정규화 조회)
+    assert client.post("/api/auth/login", json={
+        "login": "abc1", "password": "password123"}).status_code == 200
+
+
+def test_email_login_survives_set_empno_and_cancel_works(client):
+    """사번 등록 후에도 이메일 로그인이 유지되고, 이관된 신청을 본인이 취소할 수 있다."""
+    legacy = _register(client, "old2@duty.kr")
+    h = _auth(legacy["token"])
+    w = client.post("/api/wanted", json={
+        "year": 2026, "month": 10, "start_day": 3, "end_day": 3, "shift": "O"},
+        headers=h).json()
+    assert client.post("/api/auth/set-empno", json={"empno": "910001"},
+                       headers=h).status_code == 200
+    # 이메일 로그인 하위 호환 유지
+    assert client.post("/api/auth/login", json={
+        "login": "old2@duty.kr", "password": "password123"}).status_code == 200
+    # 이관된 신청(키=사번)을 같은 사용자가 취소 가능
+    assert client.delete(f"/api/wanted/{w['id']}", headers=h).status_code == 200
+
+
+def test_ward_users_includes_empno(client):
+    """계정 연결 드롭다운이 의존하는 ward-users의 empno 필드."""
+    master = _register(client, "m@duty.kr")
+    client.post("/api/auth/register", json={
+        "empno": "100777", "password": "password123", "name": "부서원",
+        "invite_code": _invite_code("61")})
+    users = client.get("/api/auth/ward-users", headers=_auth(master["token"])).json()
+    assert any(u.get("empno") == "100777" for u in users)
+
+
+def test_empno_length_boundaries(client):
+    """사번 길이 경계: 20자 허용, 21자·2자 거부."""
+    ok = client.post("/api/auth/register", json={
+        "empno": "A" * 20, "password": "password123", "name": "x", "ward": "73"})
+    assert ok.status_code == 200
+    code = _invite_code("73")
+    too_long = client.post("/api/auth/register", json={
+        "empno": "A" * 21, "password": "password123", "name": "y", "invite_code": code})
+    assert too_long.status_code == 422
+    too_short = client.post("/api/auth/register", json={
+        "empno": "AB", "password": "password123", "name": "z", "invite_code": code})
+    assert too_short.status_code == 422
