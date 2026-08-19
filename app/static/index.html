@@ -95,6 +95,9 @@
     #genBtn, #candBtn { flex: 1 1 100%; }
     .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
     .tabs button { white-space: nowrap; }
+    /* 명단·신청 표는 폭을 줄여 찌그러뜨리지 말고(열 제목 세로 깨짐) 가로 스크롤 */
+    .rtable th { white-space: nowrap; }
+    #rosterSections table.rtable { width: auto; min-width: 640px; }
   }
   @media (max-width: 380px) {
     .grid.cols { grid-template-columns: 1fr; }
@@ -121,7 +124,8 @@
   <div class="card" style="width:100%;max-width:380px;">
     <h2 id="authTitle" style="margin-top:0">로그인</h2>
     <div class="grid">
-      <div><label id="authIdLabel">사번 (또는 이메일)</label><input type="text" id="authEmail" placeholder="예: 100275" autocomplete="username"></div>
+      <div><label id="authIdLabel">사번 (또는 이메일)</label><input type="text" id="authEmail" placeholder="사번 또는 이메일 (예: 100275)" autocomplete="username">
+        <div class="hint" id="authIdHint" style="display:none">사번이 <b>로그인 아이디</b>가 됩니다 (숫자/영문 3~20자).</div></div>
       <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상" oninput="checkPwMatch()"></div>
       <div id="regFields" style="display:none">
         <label>비밀번호 확인</label><input type="password" id="authPw2" placeholder="한 번 더 입력" oninput="checkPwMatch()">
@@ -206,7 +210,7 @@
           <textarea id="wanted" placeholder="예)
 김민지, 3, 5, O
 이서준, 10, 10, N"></textarea>
-          <div class="hint">오프(O)는 최우선 반영. 같은 팀 내 오프는 같은 날 겹칠 수 없습니다(대원칙 P6). 연속 최대 3일.</div>
+          <div class="hint">오프(O)는 최우선 반영. 같은 팀 오프 겹침은 가급적 피해 반영됩니다(불가피하면 허용). 연속 최대 3일.</div>
         </div>
         <div>
           <label>사전 확정 휴무(연차 등) — <code>이름, 날짜, 코드(HY/공가/병가/Edu/경조/PH/AH)</code></label>
@@ -256,7 +260,7 @@
         <div class="legend">
           <span><b class="D">D</b> 데이</span><span><b class="E">E</b> 이브닝</span>
           <span><b class="N">N</b> 나이트</span><span><b class="M">M</b> 액팅(미드)</span>
-          <span><b class="O">O</b> 오프</span><span class="muted">셀 클릭 → D·E·N·M·O 순환(수동 수정)</span>
+          <span><b class="O">O</b> 오프</span><span class="muted" data-admin>셀 클릭 → D·E·N·M·O 순환(수동 수정)</span>
         </div>
       </div>
     </div>
@@ -282,7 +286,7 @@
       </div>
       <div class="row" style="margin-top:12px"><button class="sm" id="reqBtn" onclick="submitMyWanted()">신청 제출</button><span id="reqMsg" class="hint"></span></div>
       <div id="myWanted" style="margin-top:14px"></div>
-      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. 오프는 연속 최대 3일, 같은 팀 내 겹침은 불가합니다.</div>
+      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. 오프는 연속 최대 3일까지 신청할 수 있고, 같은 팀 오프 겹침은 가급적 피해서 반영됩니다(불가피하면 겹칠 수 있음).</div>
     </div>
   </section>
 
@@ -352,6 +356,8 @@ function toggleAuthMode() {
   regFields.style.display = regMode ? "block" : "none";
   authToggle.textContent = regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
   document.getElementById("authIdLabel").textContent = regMode ? "사번" : "사번 (또는 이메일)";
+  document.getElementById("authIdHint").style.display = regMode ? "block" : "none";
+  authEmail.placeholder = regMode ? "예: 100275" : "사번 또는 이메일 (예: 100275)";
 }
 function authError(m) { authErr.textContent = m; authErr.style.display = "block"; }
 function checkPwMatch() {
@@ -367,6 +373,7 @@ function checkPwMatch() {
 async function submitAuth() {
   const idv = authEmail.value.trim(), pw = authPw.value;
   if (regMode) {
+    if (!idv) { authError("사번을 입력해 주세요 — 로그인 아이디로 사용됩니다."); return; }
     if (!/^[A-Za-z0-9]{3,20}$/.test(idv)) {
       authError("사번은 숫자/영문 3~20자로 입력해 주세요. (예: 100275)"); return;
     }
@@ -397,17 +404,18 @@ async function submitAuth() {
 }
 // 사번 없는 구계정(이메일 가입)용: 사번 1회 등록
 async function promptSetEmpno() {
-  const v = prompt("등록할 사번을 입력하세요 (숫자/영문 3~20자)"); if (!v) return;
+  const v = (prompt("등록할 사번을 입력하세요 (숫자/영문 3~20자)") || "").trim(); if (!v) return;
+  if (!/^[A-Za-z0-9]{3,20}$/.test(v)) { alert("사번은 숫자/영문 3~20자로 입력해 주세요. (예: 100275)"); return; }
   try {
-    const u = await api("POST", "/api/auth/set-empno", { empno: v.trim() });
+    const u = await api("POST", "/api/auth/set-empno", { empno: v });
     ME.empno = u.empno; renderEmpnoHint();
-    alert("사번이 등록되었습니다: " + u.empno + "\n다음 로그인부터 사번으로 로그인할 수 있습니다.");
+    alert("사번이 등록되었습니다: " + u.empno + "\n다음 로그인부터 사번으로 로그인할 수 있습니다.\n명단 계정 연결과 원티드 신청도 사번 기준으로 자동 이관되었습니다.");
   } catch (e) { alert("등록 실패: " + e.message); }
 }
 function renderEmpnoHint() {
   const el = document.getElementById("empnoHint"); if (!el || !ME) return;
   el.innerHTML = ME.empno ? `사번 <b>${esc(ME.empno)}</b>`
-    : `<a href="#" onclick="promptSetEmpno();return false" style="color:var(--warn)">사번 등록하기 →</a>`;
+    : `<a href="#" onclick="promptSetEmpno();return false" style="color:#fbbf24">사번 등록하기 →</a>`;
 }
 function logout() { localStorage.removeItem("duty_token"); location.reload(); }
 async function initAuth() {
@@ -1334,7 +1342,15 @@ async function cancelWanted(id) {
   try { await api("DELETE", `/api/wanted/${id}`); await renderMyWanted(); }
   catch (e) { reqMsg.textContent = "취소 실패: " + e.message; reqMsg.style.color = "var(--err)"; }
 }
-function fmtDate(iso) { try { return new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"2-digit", minute:"2-digit" }); } catch (e) { return iso; } }
+function fmtDate(iso) {
+  try {
+    // 날짜만 입력된 마감("2026-09-10")은 그날 하루 종일 유효 — "오전 12:00"으로
+    // 오해되지 않게 "9월 10일까지"로 표시한다.
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((iso || "").trim());
+    if (m) return `${+m[2]}월 ${+m[3]}일까지`;
+    return new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"2-digit", minute:"2-digit" });
+  } catch (e) { return iso; }
+}
 
 /* ============================ 신청 관리(관리자) ============================ */
 async function loadApprovals() {

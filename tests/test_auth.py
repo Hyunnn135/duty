@@ -264,15 +264,20 @@ def test_legacy_email_login_and_set_empno_migration(client):
     """이메일 구계정은 계속 로그인 가능하고, 사번 등록 시 원티드 신청도 이관된다."""
     legacy = _register(client, "boss@duty.kr")  # 이메일 기반 가입(구버전 호환)
     h = _auth(legacy["token"])
-    # 이메일 키로 원티드 신청 저장
+    # 이메일 키로 원티드 신청 + 명단 계정 연결 저장
     r = client.post("/api/wanted", json={
         "year": 2026, "month": 9, "start_day": 5, "end_day": 5, "shift": "O"}, headers=h)
     assert r.status_code == 200
-    # 사번 등록 → 신청이 사번 키로 이관되어 계속 조회된다
+    nurses = [{"id": "n1", "name": "김서연", "team": 1, "account_email": "boss@duty.kr"}]
+    assert client.put("/api/roster", json={"nurses": nurses}, headers=h).status_code == 200
+    # 사번 등록 → 신청·명단 연결이 사번 키로 이관되어 계속 동작한다
     s = client.post("/api/auth/set-empno", json={"empno": "900360"}, headers=h)
     assert s.status_code == 200 and s.json()["empno"] == "900360"
     mine = client.get("/api/wanted/mine?year=2026&month=9", headers=h).json()
     assert len(mine) == 1 and mine[0]["nurse_email"] == "900360"
+    roster = client.get("/api/roster", headers=h).json()["nurses"]
+    assert roster[0]["account_email"] == "900360"
+    assert client.get("/api/me/nurse", headers=h).json()["linked"]
     # 사번 재등록은 409, 타인이 같은 사번 등록도 409
     assert client.post("/api/auth/set-empno", json={"empno": "900361"},
                        headers=h).status_code == 409

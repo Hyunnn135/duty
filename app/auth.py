@@ -415,10 +415,10 @@ def login(body: LoginRequest) -> TokenResponse:
     try:
         user = _find_by_login(conn, login_id)
         if user is None:
-            raise HTTPException(401, "사번(이메일) 또는 비밀번호가 올바르지 않습니다.")
+            raise HTTPException(401, "사번(또는 이메일)이나 비밀번호가 올바르지 않습니다.")
         expect = _hash_pw(body.password, bytes.fromhex(user["salt"]))
         if not secrets.compare_digest(expect, user["pw_hash"]):
-            raise HTTPException(401, "사번(이메일) 또는 비밀번호가 올바르지 않습니다.")
+            raise HTTPException(401, "사번(또는 이메일)이나 비밀번호가 올바르지 않습니다.")
         return TokenResponse(token=_make_token(user), role=user["role"],
                              name=user["name"], ward=user["ward"],
                              empno=user["empno"] or "")
@@ -501,6 +501,24 @@ def set_empno(
                 (empno, user.email, user.ward))
         except sqlite3.OperationalError:
             pass  # wanted 테이블이 아직 없으면(첫 사용) 이관할 것도 없다
+        # 명단의 계정 연결(account_email)도 새 식별자로 이관 — 파트장이 다시 저장하지
+        # 않아도 승인 신청 매칭·내 근무 연결이 끊기지 않게 한다.
+        try:
+            import json as _json
+            row = conn.execute(
+                "SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
+            if row:
+                nurses = _json.loads(row["data"])
+                changed = False
+                for n in nurses:
+                    if str(n.get("account_email", "")).strip().lower() == user.email.lower():
+                        n["account_email"] = empno
+                        changed = True
+                if changed:
+                    conn.execute("UPDATE rosters SET data=? WHERE ward=?",
+                                 (_json.dumps(nurses, ensure_ascii=False), user.ward))
+        except (sqlite3.OperationalError, ValueError):
+            pass  # 명단 미저장/파싱 불가 — 이관할 것 없음
         conn.commit()
         u = conn.execute("SELECT * FROM users WHERE empno=?", (empno,)).fetchone()
         return _user_info(u)
