@@ -276,3 +276,19 @@ def test_set_window_rejects_unparseable_bounds(client):
     ok = {"year": 2026, "month": 9, "closes_at": "2026-09-10"}
     assert client.put("/api/request-window", json=ok,
                       headers=_h(admin["token"])).status_code == 200
+
+
+def test_notify_address_resolves_empno_to_email(client):
+    """알림 주소 해석: 사번 키 → 가입 이메일, 이메일 없는 사번 계정 → None."""
+    from app.storage import _notify_address
+    client.post("/api/auth/register", json={
+        "empno": "100900", "email": "n1@duty.kr", "password": "password123",
+        "name": "가", "ward": "75"})
+    import os, sqlite3
+    code = sqlite3.connect(os.environ["DUTY_DB"]).execute(
+        "SELECT code FROM ward_invites WHERE ward='75'").fetchone()[0]
+    client.post("/api/auth/register", json={
+        "empno": "100901", "password": "password123", "name": "나", "invite_code": code})
+    assert _notify_address("100900") == "n1@duty.kr"
+    assert _notify_address("100901") is None        # 이메일 없는 사번 계정
+    assert _notify_address("x@y.kr") == "x@y.kr"    # 이메일 키는 그대로
