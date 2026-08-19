@@ -49,7 +49,7 @@ def _iso(delta_hours):
 def test_roster_save_and_sensitive_hidden(client):
     master = _reg(client, "m@duty.kr")            # master
     staff = _reg(client, "s@duty.kr", ward="61")  # staff, 같은 병동
-    nurses = [{"name": "장현진", "team": 1, "seniority_rank": 1, "night_eligible": True,
+    nurses = [{"name": "오수아", "team": 1, "seniority_rank": 1, "night_eligible": True,
                "is_trainee": False, "trainer": ""}]
     # staff는 저장 불가
     assert client.put("/api/roster", json={"nurses": nurses}, headers=_h(staff["token"])).status_code == 403
@@ -61,7 +61,7 @@ def test_roster_save_and_sensitive_hidden(client):
     assert "seniority_rank" in full["nurses"][0] and full["editable"]
     # staff 조회 → 민감 속성 제거
     pub = client.get("/api/roster", headers=_h(staff["token"])).json()
-    assert pub["nurses"][0]["name"] == "장현진"
+    assert pub["nurses"][0]["name"] == "오수아"
     assert "seniority_rank" not in pub["nurses"][0]
     assert "night_eligible" not in pub["nurses"][0]
     assert not pub["editable"]
@@ -78,13 +78,13 @@ def test_ward_users_and_account_link(client):
     assert emails == {"m@duty.kr", "kim@duty.kr"}  # 타병동 제외
     # 명단에 계정 연결
     nurses = [
-        {"id": "nur1", "name": "장현진", "team": 1, "seniority_rank": 1, "account_email": "kim@duty.kr"},
-        {"id": "nur2", "name": "안현영", "team": 2, "seniority_rank": 1, "account_email": ""},
+        {"id": "nur1", "name": "오수아", "team": 1, "seniority_rank": 1, "account_email": "kim@duty.kr"},
+        {"id": "nur2", "name": "문윤서", "team": 2, "seniority_rank": 1, "account_email": ""},
     ]
     client.put("/api/roster", json={"nurses": nurses}, headers=_h(master["token"]))
-    # 연결된 staff는 자기 간호사(장현진)를 확인
+    # 연결된 staff는 자기 간호사(오수아)를 확인
     mine = client.get("/api/me/nurse", headers=_h(staff["token"])).json()
-    assert mine["linked"] and mine["nurse"]["name"] == "장현진"
+    assert mine["linked"] and mine["nurse"]["name"] == "오수아"
     # staff의 명단 조회에는 타인의 account_email이 노출되지 않음
     pub = client.get("/api/roster", headers=_h(staff["token"])).json()
     assert all("account_email" not in n for n in pub["nurses"])
@@ -100,7 +100,7 @@ def test_schedule_publish_and_view(client):
     staff = _reg(client, "s@duty.kr", ward="61")
     other = _reg(client, "o@duty.kr", ward="99")  # 다른 병동
     data = {"num_days": 2, "year": 2026, "month": 8,
-            "schedules": [{"name": "장현진", "shifts": ["D", "O"], "labels": ["D", "O"],
+            "schedules": [{"name": "오수아", "shifts": ["D", "O"], "labels": ["D", "O"],
                            "counts": {"D": 1, "O": 1}}]}
     # staff 발행 불가
     assert client.post("/api/schedule/publish",
@@ -113,7 +113,7 @@ def test_schedule_publish_and_view(client):
     # 같은 병동 staff 조회 가능
     got = client.get("/api/schedule/2026/8", headers=_h(staff["token"]))
     assert got.status_code == 200
-    assert got.json()["data"]["schedules"][0]["name"] == "장현진"
+    assert got.json()["data"]["schedules"][0]["name"] == "오수아"
     # 다른 병동은 볼 수 없음(404)
     assert client.get("/api/schedule/2026/8", headers=_h(other["token"])).status_code == 404
     # 목록

@@ -69,12 +69,12 @@ def test_real_august_satisfies_hard_principles():
 
 
 def test_real_july_violations_only_at_transfer_boundary():
-    """7월의 유일한 하드 위반은 전출 인원(김에스더·김민신) 경계 아티팩트여야 한다."""
+    """7월의 유일한 하드 위반은 전출 인원(임지호·홍예준) 경계 아티팩트여야 한다."""
     d = _load()
     rows = _rows(d, "2026-07")
     sched = {r["name"]: r["shifts"] for r in rows}
     res = check(ValidateRequest(schedules=sched))
-    transfers = {"김에스더", "김민신"}
+    transfers = {"임지호", "홍예준"}
     offenders = {v.nurse for v in res.violations}
     assert offenders <= transfers, f"전출 외 인원의 하드 위반 발견: {offenders - transfers}"
 
