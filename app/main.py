@@ -60,6 +60,11 @@ def create_candidates(
     품질이 동일한 후보들을 제시해 파트장이 선택하도록 한다(권장안).
     """
     count = max(1, min(count, 5))
+    # 후보는 순차 풀이라 (제한시간 × 후보 수)만큼 걸린다 — 배포 플랫폼의 요청
+    # 타임아웃(약 300초)을 넘지 않도록 합계를 240초로 캡한다.
+    total_budget = 240.0
+    if req.time_limit_seconds * count > total_budget:
+        req = req.model_copy(update={"time_limit_seconds": total_budget / count})
     cands = solve_candidates(req, count=count)
     feasible = bool(cands and cands[0].feasible)
     real = [c for c in cands if c.feasible]

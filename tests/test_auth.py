@@ -209,3 +209,27 @@ def test_candidates_endpoint(client):
     data = r.json()
     assert data["feasible"] and data["count"] >= 1
     assert all(c["feasible"] for c in data["candidates"])
+
+
+def test_set_role_scoped_to_own_ward(client):
+    """타 병동 마스터는 다른 병동 사용자의 역할을 바꿀 수 없다(테넌트 경계).
+
+    회귀 가드: set-role의 UPDATE가 ward로 스코프되지 않으면, 아무나 새 병동을
+    개설(master)한 뒤 타 병동 계정을 승격/강등할 수 있었다.
+    """
+    _register(client, "boss61@duty.kr", ward="61")           # 61 개설(master)
+    victim = _register(client, "v@duty.kr", ward="61")       # 61 staff
+    attacker = _register(client, "boss99@duty.kr", ward="99")  # 99 개설(master)
+    r = client.post("/api/auth/set-role",
+                    json={"email": "v@duty.kr", "role": "master"},
+                    headers=_auth(attacker["token"]))
+    assert r.status_code == 404  # 타 병동 계정은 존재 여부조차 구분하지 않는다
+    assert client.get("/api/auth/me",
+                      headers=_auth(victim["token"])).json()["role"] == "staff"
+
+
+def test_register_empty_ward_rejected(client):
+    """초대 코드도 병동명도 없는 가입은 422 — 빈 병동('') 테넌트 생성 차단."""
+    r = client.post("/api/auth/register", json={
+        "email": "e@duty.kr", "password": "password123", "name": "e", "ward": "  "})
+    assert r.status_code == 422

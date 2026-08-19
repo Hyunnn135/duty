@@ -55,3 +55,31 @@ def test_export_endpoint_requires_auth_and_returns_xlsx(client):
     assert r.status_code == 200
     assert "spreadsheetml" in r.headers["content-type"]
     assert r.content[:2] == b"PK"
+
+
+def test_export_rejects_out_of_range_year_month(client):
+    tok = client.post("/api/auth/register", json={
+        "email": "b2@d.kr", "name": "파트장", "password": "password123", "ward": "62",
+    }).json()["token"]
+    payload = _sample().model_dump()
+    payload["year"], payload["month"] = 5, 13
+    r = client.post("/api/schedule/export.xlsx", json=payload,
+                    headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 422
+
+
+def test_formula_injection_neutralized():
+    """'='로 시작하는 사용자 문자열이 수식이 아닌 텍스트로 저장된다(주입 차단)."""
+    req = ExportRequest(
+        year=2026, month=8, num_days=3, teams={},
+        title='=HYPERLINK("http://evil")', subtitle="=1+1",
+        schedules=[{"name": "=CMD()", "labels": ["=2+3", "D", "O"], "counts": {}}],
+    )
+    data = build_xlsx(req)
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data))
+    ws = wb.active
+    for row in ws.iter_rows():
+        for c in row:
+            assert c.data_type != "f", f"수식으로 저장됨: {c.coordinate}={c.value!r}"
+    assert ws["A1"].value == '=HYPERLINK("http://evil")'

@@ -25,8 +25,8 @@ GitHub push(main) ──▶ GitHub Actions
 ```
 
 > **DB 영속화 주의**: Cloud Run 컨테이너는 상태가 없어 재시작 시 로컬 파일이 사라진다.
-> 그래서 SQLite 파일을 **GCS 버킷 볼륨(/data)** 에 두고 `--min/max-instances 1`(단일
-> 인스턴스)로 고정한다. 한 병동 규모 MVP에는 충분하다. 사용자가 늘면(여러 병동·동시성)
+> 그래서 SQLite 파일을 **GCS 버킷 볼륨(/data)** 에 두고 `--max-instances 1`(동시 인스턴스
+> 1개, `--min-instances 0` = scale-to-zero로 비용 절감)로 고정한다. 한 병동 규모 MVP에는 충분하다. 사용자가 늘면(여러 병동·동시성)
 > **Postgres(Supabase/Cloud SQL)로 이관**을 권장한다(§6).
 
 ---

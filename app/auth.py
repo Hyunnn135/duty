@@ -60,28 +60,39 @@ def _db_path() -> str:
     return os.environ.get("DUTY_DB", "duty.db")
 
 
+# DDL은 DB 경로별 1회만 실행한다(매 요청 스키마 파싱/락 오버헤드 제거).
+# IF NOT EXISTS라 동시 초기화 경합에도 안전하다.
+_INITED_DBS: set[str] = set()
+
+
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    path = _db_path()
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            role TEXT NOT NULL,
-            ward TEXT DEFAULT '',
-            pw_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS ward_invites (
-            ward TEXT PRIMARY KEY,
-            code TEXT UNIQUE NOT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )"""
-    )
+    conn.execute("PRAGMA busy_timeout=5000")
+    if path not in _INITED_DBS:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                ward TEXT DEFAULT '',
+                pw_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS ward_invites (
+                ward TEXT PRIMARY KEY,
+                code TEXT UNIQUE NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        conn.commit()
+        _INITED_DBS.add(path)
     return conn
 
 
@@ -98,12 +109,15 @@ def _ensure_invite(conn: sqlite3.Connection, ward: str) -> str:
     row = conn.execute("SELECT code FROM ward_invites WHERE ward=?", (ward,)).fetchone()
     if row is not None:
         return row["code"]
-    code = _new_code()
+    # INSERT OR IGNORE: 동시 첫 조회 경합에서 진 쪽도 500 없이 기존 코드를 읽는다
     conn.execute(
-        "INSERT INTO ward_invites (ward, code) VALUES (?, ?)", (ward, code)
+        "INSERT OR IGNORE INTO ward_invites (ward, code) VALUES (?, ?)",
+        (ward, _new_code()),
     )
     conn.commit()
-    return code
+    return conn.execute(
+        "SELECT code FROM ward_invites WHERE ward=?", (ward,)
+    ).fetchone()["code"]
 
 
 def _hash_pw(password: str, salt: bytes) -> str:
@@ -239,6 +253,9 @@ def register(body: RegisterRequest) -> TokenResponse:
             ward, role = row["ward"], "staff"
         else:
             ward = body.ward.strip()
+            if not ward:
+                raise HTTPException(
+                    422, "병동명을 입력하거나 초대 코드를 입력하세요.")
             existing = conn.execute(
                 "SELECT COUNT(*) AS c FROM users WHERE ward=?", (ward,)
             ).fetchone()["c"]
@@ -351,12 +368,17 @@ def set_role(
     body: SetRoleRequest,
     _master: Annotated[UserInfo, Depends(require_roles("master"))],
 ) -> UserInfo:
-    """역할 변경 — 마스터 전용 (예: 파트장을 admin으로 승격)."""
+    """역할 변경 — 마스터 전용 (예: 파트장을 admin으로 승격).
+
+    같은 병동 사용자만 대상 — 병동 경계(테넌트) 밖의 계정은 존재 여부조차
+    구분하지 않고 404로 처리한다(타 병동 권한 상승 차단).
+    """
     body.validate_role()
     conn = _conn()
     try:
         cur = conn.execute(
-            "UPDATE users SET role=? WHERE email=?", (body.role, body.email.lower())
+            "UPDATE users SET role=? WHERE email=? AND ward=?",
+            (body.role, body.email.lower(), _master.ward),
         )
         conn.commit()
         if cur.rowcount == 0:
