@@ -26,6 +26,10 @@
   .card > h2 .sub { font-weight: 400; font-size: 12px; color: #94a3b8; }
   .grid { display: grid; gap: 12px; }
   .grid.cols { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  /* datetime-local 등 고유 최소 폭이 큰 입력이 그리드 열을 강제로 넓혀
+     페이지 가로 스크롤을 만드는 것을 방지 */
+  .grid.cols > * { min-width: 0; }
+  input, select, textarea { min-width: 0; }
   label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #475569; }
   input, textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; font-family: inherit; background: #fff; }
   textarea { resize: vertical; min-height: 60px; }
@@ -45,6 +49,8 @@
   table.sched { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
   table.sched th, table.sched td { border: 1px solid var(--border); padding: 3px 5px; text-align: center; min-width: 26px; }
   table.sched th { background: #f8fafc; font-weight: 600; position: sticky; top: 0; }
+  /* 근무표는 컨테이너 안에서 양방향 스크롤 — 세로로 내려도 날짜 헤더가 고정된다 */
+  section[data-tab="board"] .scroll { max-height: 78vh; overflow: auto; }
   table.sched td.name { text-align: left; font-weight: 600; position: sticky; left: 0; background: #fff; z-index: 1; min-width: 74px; }
   table.sched th.name { position: sticky; left: 0; z-index: 2; }
   table.sched td.wkend, table.sched th.wkend { background: var(--wkend); }
@@ -52,6 +58,7 @@
   table.sched tr.teamsep td { border-top: 2px solid #cbd5e1; }
   table.sched tr.totrow td { background: #f1f5f9; font-weight: 700; }
   .cell { font-weight: 700; cursor: pointer; display: block; border-radius: 3px; user-select: none; }
+  .cell.ro { cursor: default; user-select: text; }  /* 부서원: 읽기 전용 — 클릭 유도 금지 */
   .cell.D { color: var(--d); } .cell.E { color: var(--e); } .cell.N { color: var(--n); }
   .cell.M { color: var(--m); } .cell.O { color: var(--o); } .cell.code { color: #be185d; font-size: 10px; }
   .legend { font-size: 12px; color: #64748b; margin-top: 10px; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -95,6 +102,17 @@
     #genBtn, #candBtn { flex: 1 1 100%; }
     .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
     .tabs button { white-space: nowrap; }
+    /* 명단·신청 표는 폭을 줄여 찌그러뜨리지 말고(열 제목 세로 깨짐) 가로 스크롤 */
+    .rtable th { white-space: nowrap; }
+    #rosterSections table.rtable { width: auto; min-width: 640px; }
+    /* 터치 타깃 확대(주요 버튼 최소 40px) + 탭 여러 개 보이게 패딩 축소 */
+    button.sm { padding: 10px 14px; min-height: 40px; }
+    .rtable button.sm { min-height: 36px; padding: 8px 10px; }
+    .tabs button { padding: 8px 10px; }
+    /* 플로팅 피드백 버튼: 아이콘만(테이블 가림 최소화) + 본문 하단 여백 확보 */
+    #fbBtn { width: 52px; height: 52px; padding: 0; font-size: 20px; }
+    #fbBtn .fbtxt { display: none; }
+    .wrap { padding-bottom: 84px; }
   }
   @media (max-width: 380px) {
     .grid.cols { grid-template-columns: 1fr; }
@@ -111,21 +129,24 @@
     <div id="userName" style="font-weight:700"></div>
     <div id="userRole" class="muted" style="margin:2px 0 2px"></div>
     <div id="linkHint" style="font-size:11px;margin-bottom:6px"></div>
+    <div id="empnoHint" style="font-size:11px;margin-bottom:6px"></div>
     <button class="sm" onclick="logout()" style="background:#334155">로그아웃</button>
   </div>
 </header>
 
 <!-- 로그인/회원가입 오버레이 -->
-<div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;">
-  <div class="card" style="width:100%;max-width:380px;">
+<div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
+  <div class="card" style="width:100%;max-width:380px;margin:auto 0;">
     <h2 id="authTitle" style="margin-top:0">로그인</h2>
     <div class="grid">
-      <div><label>이메일</label><input type="email" id="authEmail" placeholder="you@hospital.kr"></div>
+      <div><label id="authIdLabel">사번 (또는 이메일)</label><input type="text" id="authEmail" placeholder="사번 또는 이메일 (예: 100275)" autocomplete="username">
+        <div class="hint" id="authIdHint" style="display:none">사번이 <b>로그인 아이디</b>가 됩니다 (숫자/영문 3~20자).</div></div>
       <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상" oninput="checkPwMatch()"></div>
       <div id="regFields" style="display:none">
         <label>비밀번호 확인</label><input type="password" id="authPw2" placeholder="한 번 더 입력" oninput="checkPwMatch()">
         <div id="pwMatch" style="font-size:12px;min-height:16px;margin-top:3px"></div>
         <label style="margin-top:10px">이름</label><input id="authName" placeholder="예: 김간호">
+        <label style="margin-top:10px">이메일 (선택)</label><input type="email" id="authEmailOpt" placeholder="알림 수신용 — 없어도 가입 가능">
         <label style="margin-top:10px">초대 코드</label><input id="authInvite" placeholder="부서장에게 받은 8자리 코드" style="text-transform:uppercase">
         <div class="hint">부서원은 부서장에게 받은 <b>초대 코드</b>로 가입합니다 (병동 자동 설정).</div>
         <label style="margin-top:10px">병동 (새로 개설할 때만)</label><input id="authWard" placeholder="예: 61 — 코드가 있으면 비워두세요">
@@ -204,7 +225,7 @@
           <textarea id="wanted" placeholder="예)
 김민지, 3, 5, O
 이서준, 10, 10, N"></textarea>
-          <div class="hint">오프(O)는 최우선 반영. 같은 팀 내 오프는 같은 날 겹칠 수 없습니다(대원칙 P6). 연속 최대 3일.</div>
+          <div class="hint">오프(O)는 최우선 반영. 같은 팀 오프 겹침은 가급적 피해 반영됩니다(불가피하면 허용). 연속 최대 3일.</div>
         </div>
         <div>
           <label>사전 확정 휴무(연차 등) — <code>이름, 날짜, 코드(HY/공가/병가/Edu/경조/PH/AH)</code></label>
@@ -254,7 +275,7 @@
         <div class="legend">
           <span><b class="D">D</b> 데이</span><span><b class="E">E</b> 이브닝</span>
           <span><b class="N">N</b> 나이트</span><span><b class="M">M</b> 액팅(미드)</span>
-          <span><b class="O">O</b> 오프</span><span class="muted">셀 클릭 → D·E·N·M·O 순환(수동 수정)</span>
+          <span><b class="O">O</b> 오프</span><span class="muted" data-admin>셀 클릭 → D·E·N·M·O 순환(수동 수정)</span>
         </div>
       </div>
     </div>
@@ -272,15 +293,15 @@
       <h2>🙋 나의 원티드 신청</h2>
       <div id="winBanner"></div>
       <div class="grid cols">
-        <div><label>연도</label><input type="number" id="reqYear" min="2024" max="2030"></div>
-        <div><label>월</label><input type="number" id="reqMonth" min="1" max="12"></div>
+        <div><label>연도</label><input type="number" id="reqYear" min="2024" max="2030" onchange="loadWindowBanner();renderMyWanted()"></div>
+        <div><label>월</label><input type="number" id="reqMonth" min="1" max="12" onchange="loadWindowBanner();renderMyWanted()"></div>
         <div><label>시작일</label><input type="number" id="reqStart" min="1" max="31"></div>
         <div><label>종료일</label><input type="number" id="reqEnd" min="1" max="31"></div>
         <div><label>종류</label><select id="reqShift"><option value="O">오프</option><option value="D">데이</option><option value="E">이브닝</option><option value="N">나이트</option></select></div>
       </div>
       <div class="row" style="margin-top:12px"><button class="sm" id="reqBtn" onclick="submitMyWanted()">신청 제출</button><span id="reqMsg" class="hint"></span></div>
       <div id="myWanted" style="margin-top:14px"></div>
-      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. 오프는 연속 최대 3일, 같은 팀 내 겹침은 불가합니다.</div>
+      <div class="status warn" style="margin-top:14px">데이·이브닝·나이트 원티드는 반영되지 않을 수 있습니다. 원티드는 한 건당 최대 3일까지 신청할 수 있고, 같은 팀 오프 겹침은 가급적 피해서 반영됩니다(불가피하면 겹칠 수 있음).</div>
     </div>
   </section>
 
@@ -314,7 +335,7 @@
 </div>
 
 <!-- 피드백 플로팅 버튼 -->
-<button id="fbBtn" onclick="openFeedback()" style="position:fixed;right:18px;bottom:18px;z-index:50;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,.2);display:none">💬 운영자에게</button>
+<button id="fbBtn" onclick="openFeedback()" style="position:fixed;right:18px;bottom:18px;z-index:50;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,.2);display:none">💬<span class="fbtxt"> 운영자에게</span></button>
 <div id="fbModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:110;align-items:center;justify-content:center;padding:20px">
   <div class="card" style="max-width:420px;width:100%">
     <h2 style="margin-top:0">💬 운영자에게 메시지</h2>
@@ -330,7 +351,7 @@
 <div id="genErrModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;align-items:center;justify-content:center;padding:20px">
   <div class="card" style="max-width:520px;width:100%;max-height:80vh;overflow-y:auto">
     <h2 style="margin-top:0;color:var(--err)">⚠️ 근무표를 만들 수 없습니다</h2>
-    <div id="genErrMsg" style="white-space:pre-line;font-size:13.5px;line-height:1.7;background:var(--errbg);color:var(--err);border-radius:8px;padding:12px 14px"></div>
+    <div id="genErrMsg" style="white-space:pre-line;font-size:13.5px;line-height:1.7;background:var(--errbg);color:var(--err);border-radius:8px;padding:12px 14px;max-height:55vh;overflow-y:auto"></div>
     <div class="hint" style="margin-top:10px">위 안내대로 조정한 뒤 다시 "근무표 생성"을 눌러주세요. 해결이 어려우면 운영자에게 문의하세요.</div>
     <div class="row" style="margin-top:12px"><button class="sm" onclick="closeGenErr()">확인</button></div>
   </div>
@@ -349,6 +370,9 @@ function toggleAuthMode() {
   authBtn.textContent = regMode ? "가입하기" : "로그인";
   regFields.style.display = regMode ? "block" : "none";
   authToggle.textContent = regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
+  document.getElementById("authIdLabel").textContent = regMode ? "사번" : "사번 (또는 이메일)";
+  document.getElementById("authIdHint").style.display = regMode ? "block" : "none";
+  authEmail.placeholder = regMode ? "예: 100275" : "사번 또는 이메일 (예: 100275)";
 }
 function authError(m) { authErr.textContent = m; authErr.style.display = "block"; }
 function checkPwMatch() {
@@ -362,23 +386,51 @@ function checkPwMatch() {
   return ok;
 }
 async function submitAuth() {
-  const email = authEmail.value.trim(), pw = authPw.value;
-  if (regMode && pw !== document.getElementById("authPw2").value) {
-    authError("비밀번호가 일치하지 않습니다. 다시 확인해 주세요."); return;
+  const idv = authEmail.value.trim(), pw = authPw.value;
+  if (regMode) {
+    if (!idv) { authError("사번을 입력해 주세요 — 로그인 아이디로 사용됩니다."); return; }
+    if (!/^[A-Za-z0-9]{3,20}$/.test(idv)) {
+      authError("사번은 숫자/영문 3~20자로 입력해 주세요. (예: 100275)"); return;
+    }
+    if (pw !== document.getElementById("authPw2").value) {
+      authError("비밀번호가 일치하지 않습니다. 다시 확인해 주세요."); return;
+    }
   }
   const url = regMode ? "/api/auth/register" : "/api/auth/login";
   const body = regMode
-    ? { email, password: pw, name: authName.value.trim() || "사용자",
+    ? { empno: idv, email: (document.getElementById("authEmailOpt").value.trim() || null),
+        password: pw, name: authName.value.trim() || "사용자",
         ward: authWard.value.trim(), invite_code: authInvite.value.trim().toUpperCase() }
-    : { email, password: pw };
+    : { login: idv, password: pw };
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { authError(data.detail || ("서버 오류 (" + res.status + ") — 잠시 후 다시 시도해 주세요")); return; }
+    if (!res.ok) {
+      const d = data.detail;
+      authError(typeof d === "string" ? d :
+        (Array.isArray(d) && d[0] && d[0].msg) ? "입력값을 확인해 주세요: " + d[0].msg :
+        ("서버 오류 (" + res.status + ") — 잠시 후 다시 시도해 주세요"));
+      return;
+    }
     localStorage.setItem("duty_token", data.token);
-    ME = { name: data.name, role: data.role, ward: data.ward };
+    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "" };
     onAuthed();
   } catch (e) { authError("서버에 연결할 수 없습니다"); }
+}
+// 사번 없는 구계정(이메일 가입)용: 사번 1회 등록
+async function promptSetEmpno() {
+  const v = (prompt("등록할 사번을 입력하세요 (숫자/영문 3~20자)") || "").trim(); if (!v) return;
+  if (!/^[A-Za-z0-9]{3,20}$/.test(v)) { alert("사번은 숫자/영문 3~20자로 입력해 주세요. (예: 100275)"); return; }
+  try {
+    const u = await api("POST", "/api/auth/set-empno", { empno: v });
+    ME.empno = u.empno; renderEmpnoHint();
+    alert("사번이 등록되었습니다: " + u.empno + "\n다음 로그인부터 사번으로 로그인할 수 있습니다.\n명단 계정 연결과 원티드 신청도 사번 기준으로 자동 이관되었습니다.");
+  } catch (e) { alert("등록 실패: " + e.message); }
+}
+function renderEmpnoHint() {
+  const el = document.getElementById("empnoHint"); if (!el || !ME) return;
+  el.innerHTML = ME.empno ? `사번 <b>${esc(ME.empno)}</b>`
+    : `<a href="#" onclick="promptSetEmpno();return false" style="color:#fbbf24">사번 등록하기 →</a>`;
 }
 function logout() { localStorage.removeItem("duty_token"); location.reload(); }
 async function initAuth() {
@@ -416,6 +468,7 @@ async function onAuthed() {
   userBox.style.display = "block";
   userName.textContent = ME.name;
   userRole.textContent = ROLE_KO[ME.role] || ME.role;
+  renderEmpnoHint();
   buildTabs();
   // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
   try {
@@ -465,10 +518,15 @@ function loadRosterList(nurses) {
 }
 function genId() { try { return "nur_" + crypto.randomUUID().slice(0, 8); } catch (e) { return "nur_" + Math.floor(Math.random() * 1e9); } }
 // 내 근무 이름: 연결된 명단 이름 우선, 없으면 계정 표시명
-function myNurseName() { return (MY_NURSE && MY_NURSE.name) || (ME && ME.name) || ""; }
+// 부서원은 '명단 연결'된 이름만 신뢰 — 계정 표시 이름 폴백은 동명이인일 때
+// 남의 근무·통계를 본인 것처럼 보여줄 수 있어 관리자에게만 허용한다.
+function myNurseName() {
+  if (MY_NURSE && MY_NURSE.name) return MY_NURSE.name;
+  return isAdmin() ? ((ME && ME.name) || "") : "";
+}
 function renderLinkHint() {
   const el = document.getElementById("linkHint"); if (!el) return;
-  if (MY_NURSE) el.innerHTML = `연결됨: <b>${esc(MY_NURSE.name)}</b>${MY_NURSE.team?` (${MY_NURSE.team}팀)`:""}`;
+  if (MY_NURSE) el.innerHTML = `연결됨: <b>${esc(MY_NURSE.name)}</b>${MY_NURSE.team?` (${teamName(MY_NURSE.team)})`:""}`;
   else if (!isAdmin()) el.innerHTML = `<span style="color:var(--warn)">명단 미연결 — 부서장에게 계정 연결을 요청하세요.</span>`;
   else el.textContent = "";
 }
@@ -489,6 +547,13 @@ function buildTabs() {
     b.dataset.k = k; tabs.appendChild(b);
   });
   document.getElementById("fbBtn").style.display = "block";  // 피드백 버튼(전 역할)
+  // 빈 상태 문구를 역할에 맞게 — 부서원에게 존재하지 않는 '설정 탭에서 생성' 안내 금지
+  if (!isAdmin()) {
+    document.querySelector("#boardEmpty .muted").textContent =
+      "아직 발행된 근무표가 없습니다. 부서장이 발행하면 여기에 표시됩니다.";
+    document.querySelector("#statsEmpty .muted").textContent =
+      "근무표가 발행되면 내 통계가 표시됩니다.";
+  }
   switchTab(defs[0][0]);
 }
 function switchTab(k) {
@@ -503,7 +568,9 @@ function switchTab(k) {
 
 /* ============================ 명단(로스터) ============================ */
 let roster = []; // {id, name, team, rank, night, trainee, trainer, account}
-let wardUsers = []; // [{email,name,role}] — 계정 연결 드롭다운용
+let wardUsers = []; // [{empno,email,name,role}] — 계정 연결 드롭다운용
+// 계정 식별자: 사번 우선, 없으면(구계정) 이메일
+function userKey(u) { return (u.empno || u.email || "").trim(); }
 let MY_NURSE = null; // 현재 사용자와 연결된 명단 간호사
 function seedRoster() {
   // 61병동 실제 명단 22명 (A 8 · B 6 · C 8, 위=고참). 세 번째 값 = 단독근무
@@ -530,9 +597,16 @@ function resetRoster() {
 function addNurse(team) { roster.push({ id: genId(), name: "", team: team || 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
 function accountOptions(sel) {
   const opts = [`<option value="">— 미연결 —</option>`];
-  for (const u of wardUsers) opts.push(`<option value="${esc(u.email)}" ${u.email===sel?"selected":""}>${esc(u.name)} (${esc(u.email)})</option>`);
-  // 목록에 없지만 이미 저장된 이메일이면 유지
-  if (sel && !wardUsers.some(u => u.email === sel)) opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
+  for (const u of wardUsers) {
+    const k = userKey(u);
+    if (!k) continue;
+    // 구계정 이메일로 저장돼 있던 연결도 같은 사용자로 인식(사번 등록 후 하위호환)
+    const on = (k === sel) || (u.email && u.email === sel);
+    opts.push(`<option value="${esc(k)}" ${on?"selected":""}>${esc(u.name)} (${esc(k)})</option>`);
+  }
+  // 목록에 없지만 이미 저장된 식별자면 유지
+  if (sel && !wardUsers.some(u => userKey(u) === sel || u.email === sel))
+    opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
   return opts.join("");
 }
 // 팀 표시 이름: 1→A팀, 2→B팀, 3→C팀
@@ -615,8 +689,23 @@ function _setLiftY(clientY) {
   const nat = row.getBoundingClientRect().top;
   row.style.transform = `translateY(${clientY - DRAG.grabOff - nat}px)`;
 }
+let DRAG_SCROLL = 0; // 드래그 중 화면 가장자리 자동 스크롤 속도(px/frame)
+function _autoScroll() {
+  if (!DRAG || !DRAG_SCROLL) return;
+  window.scrollBy(0, DRAG_SCROLL);
+  if (DRAG.lastEvent) _dragMove(DRAG.lastEvent); // 스크롤된 좌표로 삽입 위치 재계산
+  requestAnimationFrame(_autoScroll);
+}
 function _dragMove(e) {
   if (!DRAG || (e.pointerId !== undefined && e.pointerId !== DRAG.pid)) return;
+  DRAG.lastEvent = e;
+  // 터치 드래그는 페이지 스크롤이 막혀 있어(touch-action:none) 가장자리에서
+  // 자동 스크롤해 줘야 다른 팀 표까지 이동할 수 있다.
+  const EDGE = 80;
+  const dir = e.clientY < EDGE ? -10 : (e.clientY > innerHeight - EDGE ? 10 : 0);
+  const wasScrolling = DRAG_SCROLL !== 0;
+  DRAG_SCROLL = dir;
+  if (dir && !wasScrolling) requestAnimationFrame(_autoScroll);
   const row = DRAG.row;
   // 포인터가 가리키는 삽입 위치(세 팀 표 전체에서) 탐색
   let target = null;
@@ -653,6 +742,7 @@ function _dragEnd(e) {
   if (!DRAG || (e.pointerId !== undefined && e.pointerId !== DRAG.pid)) return;
   const row = DRAG.row;
   DRAG = null;
+  DRAG_SCROLL = 0;
   window.removeEventListener("pointermove", _dragMove);
   window.removeEventListener("pointerup", _dragEnd);
   window.removeEventListener("pointercancel", _dragEnd);
@@ -1040,7 +1130,8 @@ async function loadPublished(y, m) {
     if (!list || !list.length) { loadLocal(); return; }
     // 특정 월 지정 없이 초기 로드하는 경우: 아직 발행되지 않은 초안이 로컬에 있으면
     // 초안을 먼저 보여준다(생성해 둔 다음 달 표가 로그인/새로고침으로 사라지지 않게).
-    if (!y && !m) {
+    // 관리자 전용 — 공용 PC에서 부서원이 미발행 초안을 정식 표로 오인하면 안 된다.
+    if (!y && !m && isAdmin()) {
       const draft = readLocal();
       if (draft && draft.year && !draft._published &&
           !list.some(s => s.year === draft.year && s.month === draft.month)) {
@@ -1053,10 +1144,12 @@ async function loadPublished(y, m) {
     const r = await api("GET", `/api/schedule/${pick.year}/${pick.month}`);
     if (seq !== LOAD_SEQ) return;
     SCHED = r.data; SCHED._published = true; SCHED._availMonths = list;
+    SCHED._publishedAt = r.updated_at;
     renderBoard();
   } catch (e) { if (seq === LOAD_SEQ) loadLocal(); }
 }
-function loadLocal() { const s = readLocal(); if (s) { SCHED = s; renderBoard(); } }
+// 로컬 초안 복원도 관리자 전용 — 부서원은 서버 발행본만 본다
+function loadLocal() { if (!isAdmin()) return; const s = readLocal(); if (s) { SCHED = s; renderBoard(); } }
 function onViewMonth() {
   const v = document.getElementById("viewMonth").value; if (!v) return;
   const [y, m] = v.split("-").map(Number); loadPublished(y, m);
@@ -1083,13 +1176,25 @@ function renderBoard() {
   boardTitle.textContent = (y&&m) ? `${y}년 ${m}월 근무표 (${nd}일)` : `근무표 (${nd}일)`;
   populateViewMonth(); hideAdminEls();
   const st = SCHED.feasible !== false;
-  boardStatus.innerHTML = st
-    ? `<div class="status ok">✅ ${esc(SCHED.message||"생성 완료")}${SCHED.unmet_wanted_off!=null?` · 미반영 원티드오프 ${SCHED.unmet_wanted_off}건`:""}</div>`
-    : `<div class="status err">❌ ${esc(SCHED.message||"생성 실패")}</div>`;
+  if (!isAdmin() && SCHED._published) {
+    // 부서원에게는 생성 메타(미반영 원티드 등) 대신 발행 정보를 보여준다
+    boardStatus.innerHTML = `<div class="status ok">📌 발행된 근무표${SCHED._publishedAt ? ` · ${fmtDate(SCHED._publishedAt)} 발행` : ""}</div>`;
+  } else {
+    boardStatus.innerHTML = st
+      ? `<div class="status ok">✅ ${esc(SCHED.message||"생성 완료")}${SCHED.unmet_wanted_off!=null?` · 미반영 원티드오프 ${SCHED.unmet_wanted_off}건`:""}</div>`
+      : `<div class="status err">❌ ${esc(SCHED.message||"생성 실패")}</div>`;
+  }
 
   let rows = SCHED.schedules.map((s,i)=>({ ...s, team: SCHED.teams?.[s.name]||1, _i:i }));
-  if (document.getElementById("onlyMine").checked) { const mn = myNurseName(); rows = rows.filter(r => r.name === mn); }
+  const onlyMine = document.getElementById("onlyMine").checked;
+  if (onlyMine) { const mn = myNurseName(); rows = rows.filter(r => r.name === mn); }
   rows.sort((a,b)=> a.team-b.team || a._i-b._i);
+  if (onlyMine && rows.length === 0) {
+    document.getElementById("schedTable").innerHTML =
+      `<tbody><tr><td style="padding:14px" class="muted">내 근무를 찾을 수 없습니다 — ` +
+      `명단에 계정이 연결되지 않았습니다. 부서장에게 연결을 요청하세요.</td></tr></tbody>`;
+    return;
+  }
 
   // header
   let h = "<thead><tr><th class='name'>간호사</th>";
@@ -1106,7 +1211,7 @@ function renderBoard() {
     for (let d=0; d<nd; d++){
       const lab = (r.labels&&r.labels[d])||r.shifts[d];
       const we = y&&m&&isWeekend(y,m,d+1);
-      b += `<td class="${we?'wkend':''}" data-n="${esc(r.name)}" data-d="${d}"><span class="cell ${cellCls(lab)}" onclick="cycleCell(this)">${esc(lab)}</span></td>`;
+      b += `<td class="${we?'wkend':''}" data-n="${esc(r.name)}" data-d="${d}"><span class="cell ${cellCls(lab)}${isAdmin()?'':' ro'}"${isAdmin()?' onclick="cycleCell(this)"':''}>${esc(lab)}</span></td>`;
     }
     const c=r.counts||{};
     b += `<td class="tot">${c.D||0}</td><td class="tot">${c.E||0}</td><td class="tot">${c.N||0}</td><td class="tot">${c.M||0}</td><td class="tot">${c.O||0}</td></tr>`;
@@ -1295,7 +1400,15 @@ async function cancelWanted(id) {
   try { await api("DELETE", `/api/wanted/${id}`); await renderMyWanted(); }
   catch (e) { reqMsg.textContent = "취소 실패: " + e.message; reqMsg.style.color = "var(--err)"; }
 }
-function fmtDate(iso) { try { return new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"2-digit", minute:"2-digit" }); } catch (e) { return iso; } }
+function fmtDate(iso) {
+  try {
+    // 날짜만 입력된 마감("2026-09-10")은 그날 하루 종일 유효 — "오전 12:00"으로
+    // 오해되지 않게 "9월 10일까지"로 표시한다.
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((iso || "").trim());
+    if (m) return `${+m[2]}월 ${+m[3]}일까지`;
+    return new Date(iso).toLocaleString("ko-KR", { month:"long", day:"numeric", hour:"2-digit", minute:"2-digit" });
+  } catch (e) { return iso; }
+}
 
 /* ============================ 신청 관리(관리자) ============================ */
 async function loadApprovals() {
