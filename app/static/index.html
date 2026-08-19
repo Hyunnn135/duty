@@ -111,6 +111,7 @@
     <div id="userName" style="font-weight:700"></div>
     <div id="userRole" class="muted" style="margin:2px 0 2px"></div>
     <div id="linkHint" style="font-size:11px;margin-bottom:6px"></div>
+    <div id="empnoHint" style="font-size:11px;margin-bottom:6px"></div>
     <button class="sm" onclick="logout()" style="background:#334155">로그아웃</button>
   </div>
 </header>
@@ -120,12 +121,13 @@
   <div class="card" style="width:100%;max-width:380px;">
     <h2 id="authTitle" style="margin-top:0">로그인</h2>
     <div class="grid">
-      <div><label>이메일</label><input type="email" id="authEmail" placeholder="you@hospital.kr"></div>
+      <div><label id="authIdLabel">사번 (또는 이메일)</label><input type="text" id="authEmail" placeholder="예: 100275" autocomplete="username"></div>
       <div><label>비밀번호</label><input type="password" id="authPw" placeholder="8자 이상" oninput="checkPwMatch()"></div>
       <div id="regFields" style="display:none">
         <label>비밀번호 확인</label><input type="password" id="authPw2" placeholder="한 번 더 입력" oninput="checkPwMatch()">
         <div id="pwMatch" style="font-size:12px;min-height:16px;margin-top:3px"></div>
         <label style="margin-top:10px">이름</label><input id="authName" placeholder="예: 김간호">
+        <label style="margin-top:10px">이메일 (선택)</label><input type="email" id="authEmailOpt" placeholder="알림 수신용 — 없어도 가입 가능">
         <label style="margin-top:10px">초대 코드</label><input id="authInvite" placeholder="부서장에게 받은 8자리 코드" style="text-transform:uppercase">
         <div class="hint">부서원은 부서장에게 받은 <b>초대 코드</b>로 가입합니다 (병동 자동 설정).</div>
         <label style="margin-top:10px">병동 (새로 개설할 때만)</label><input id="authWard" placeholder="예: 61 — 코드가 있으면 비워두세요">
@@ -349,6 +351,7 @@ function toggleAuthMode() {
   authBtn.textContent = regMode ? "가입하기" : "로그인";
   regFields.style.display = regMode ? "block" : "none";
   authToggle.textContent = regMode ? "이미 계정이 있어요 → 로그인" : "처음이신가요? 회원가입";
+  document.getElementById("authIdLabel").textContent = regMode ? "사번" : "사번 (또는 이메일)";
 }
 function authError(m) { authErr.textContent = m; authErr.style.display = "block"; }
 function checkPwMatch() {
@@ -362,23 +365,49 @@ function checkPwMatch() {
   return ok;
 }
 async function submitAuth() {
-  const email = authEmail.value.trim(), pw = authPw.value;
-  if (regMode && pw !== document.getElementById("authPw2").value) {
-    authError("비밀번호가 일치하지 않습니다. 다시 확인해 주세요."); return;
+  const idv = authEmail.value.trim(), pw = authPw.value;
+  if (regMode) {
+    if (!/^[A-Za-z0-9]{3,20}$/.test(idv)) {
+      authError("사번은 숫자/영문 3~20자로 입력해 주세요. (예: 100275)"); return;
+    }
+    if (pw !== document.getElementById("authPw2").value) {
+      authError("비밀번호가 일치하지 않습니다. 다시 확인해 주세요."); return;
+    }
   }
   const url = regMode ? "/api/auth/register" : "/api/auth/login";
   const body = regMode
-    ? { email, password: pw, name: authName.value.trim() || "사용자",
+    ? { empno: idv, email: (document.getElementById("authEmailOpt").value.trim() || null),
+        password: pw, name: authName.value.trim() || "사용자",
         ward: authWard.value.trim(), invite_code: authInvite.value.trim().toUpperCase() }
-    : { email, password: pw };
+    : { login: idv, password: pw };
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { authError(data.detail || ("서버 오류 (" + res.status + ") — 잠시 후 다시 시도해 주세요")); return; }
+    if (!res.ok) {
+      const d = data.detail;
+      authError(typeof d === "string" ? d :
+        (Array.isArray(d) && d[0] && d[0].msg) ? "입력값을 확인해 주세요: " + d[0].msg :
+        ("서버 오류 (" + res.status + ") — 잠시 후 다시 시도해 주세요"));
+      return;
+    }
     localStorage.setItem("duty_token", data.token);
-    ME = { name: data.name, role: data.role, ward: data.ward };
+    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "" };
     onAuthed();
   } catch (e) { authError("서버에 연결할 수 없습니다"); }
+}
+// 사번 없는 구계정(이메일 가입)용: 사번 1회 등록
+async function promptSetEmpno() {
+  const v = prompt("등록할 사번을 입력하세요 (숫자/영문 3~20자)"); if (!v) return;
+  try {
+    const u = await api("POST", "/api/auth/set-empno", { empno: v.trim() });
+    ME.empno = u.empno; renderEmpnoHint();
+    alert("사번이 등록되었습니다: " + u.empno + "\n다음 로그인부터 사번으로 로그인할 수 있습니다.");
+  } catch (e) { alert("등록 실패: " + e.message); }
+}
+function renderEmpnoHint() {
+  const el = document.getElementById("empnoHint"); if (!el || !ME) return;
+  el.innerHTML = ME.empno ? `사번 <b>${esc(ME.empno)}</b>`
+    : `<a href="#" onclick="promptSetEmpno();return false" style="color:var(--warn)">사번 등록하기 →</a>`;
 }
 function logout() { localStorage.removeItem("duty_token"); location.reload(); }
 async function initAuth() {
@@ -416,6 +445,7 @@ async function onAuthed() {
   userBox.style.display = "block";
   userName.textContent = ME.name;
   userRole.textContent = ROLE_KO[ME.role] || ME.role;
+  renderEmpnoHint();
   buildTabs();
   // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
   try {
@@ -503,7 +533,9 @@ function switchTab(k) {
 
 /* ============================ 명단(로스터) ============================ */
 let roster = []; // {id, name, team, rank, night, trainee, trainer, account}
-let wardUsers = []; // [{email,name,role}] — 계정 연결 드롭다운용
+let wardUsers = []; // [{empno,email,name,role}] — 계정 연결 드롭다운용
+// 계정 식별자: 사번 우선, 없으면(구계정) 이메일
+function userKey(u) { return (u.empno || u.email || "").trim(); }
 let MY_NURSE = null; // 현재 사용자와 연결된 명단 간호사
 function seedRoster() {
   // 61병동 실제 명단 22명 (A 8 · B 6 · C 8, 위=고참). 세 번째 값 = 단독근무
@@ -530,9 +562,16 @@ function resetRoster() {
 function addNurse(team) { roster.push({ id: genId(), name: "", team: team || 1, night: true, trainee: false, trainer: "", account: "" }); renderRoster(); }
 function accountOptions(sel) {
   const opts = [`<option value="">— 미연결 —</option>`];
-  for (const u of wardUsers) opts.push(`<option value="${esc(u.email)}" ${u.email===sel?"selected":""}>${esc(u.name)} (${esc(u.email)})</option>`);
-  // 목록에 없지만 이미 저장된 이메일이면 유지
-  if (sel && !wardUsers.some(u => u.email === sel)) opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
+  for (const u of wardUsers) {
+    const k = userKey(u);
+    if (!k) continue;
+    // 구계정 이메일로 저장돼 있던 연결도 같은 사용자로 인식(사번 등록 후 하위호환)
+    const on = (k === sel) || (u.email && u.email === sel);
+    opts.push(`<option value="${esc(k)}" ${on?"selected":""}>${esc(u.name)} (${esc(k)})</option>`);
+  }
+  // 목록에 없지만 이미 저장된 식별자면 유지
+  if (sel && !wardUsers.some(u => userKey(u) === sel || u.email === sel))
+    opts.push(`<option value="${esc(sel)}" selected>${esc(sel)}</option>`);
   return opts.join("");
 }
 // 팀 표시 이름: 1→A팀, 2→B팀, 3→C팀

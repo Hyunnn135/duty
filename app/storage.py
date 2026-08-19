@@ -44,11 +44,26 @@ def _emails_by_role(roles: tuple[str, ...], ward: str | None = None) -> list[str
                     f"SELECT email FROM users WHERE ward=? AND role IN ({placeholders})",
                     (ward, *roles),
                 ).fetchall()
-            return [r["email"] for r in rows]
+            return [r["email"] for r in rows if r["email"]]  # 사번만 있는 계정은 제외
         finally:
             conn.close()
     except Exception:  # users 테이블 부재 등 — 알림은 부가기능이므로 조용히 무시
         return []
+
+
+def _notify_address(key: str) -> str | None:
+    """계정 식별자(사번 또는 이메일) → 알림용 이메일. 사번 계정에 이메일이 없으면 None."""
+    if "@" in key:
+        return key
+    try:
+        conn = _conn()
+        try:
+            r = conn.execute("SELECT email FROM users WHERE empno=?", (key,)).fetchone()
+            return r["email"] if r and r["email"] else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
 
 # 부서원에게 공개되지 않는 민감 명단 속성 (PLAN 7.5.10)
 # account_email(계정 연결)은 타인의 것을 노출하지 않도록 부서원 조회에서 제거한다
@@ -302,7 +317,7 @@ def save_roster(
             "INSERT INTO rosters (ward, data, updated_at, updated_by) VALUES (?,?,?,?) "
             "ON CONFLICT(ward) DO UPDATE SET data=excluded.data, "
             "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-            (user.ward, json.dumps(body.nurses, ensure_ascii=False), _now(), user.email),
+            (user.ward, json.dumps(body.nurses, ensure_ascii=False), _now(), user.key()),
         )
         conn.commit()
         return RosterResponse(nurses=body.nurses, updated_at=_now(), editable=True)
@@ -312,14 +327,20 @@ def save_roster(
 
 @router.get("/me/nurse", response_model=MyNurse)
 def my_nurse(user: Annotated[UserInfo, Depends(get_current_user)]) -> MyNurse:
-    """현재 로그인 사용자와 연결된 명단 간호사를 반환 (account_email 매칭)."""
+    """현재 로그인 사용자와 연결된 명단 간호사를 반환.
+
+    account_email 필드에는 계정 식별자(사번 우선, 구계정은 이메일)가 저장된다 —
+    둘 다 대조해 사번 전환 전에 저장된 연결도 계속 동작하게 한다.
+    """
     conn = _conn()
     try:
         row = conn.execute("SELECT data FROM rosters WHERE ward=?", (user.ward,)).fetchone()
         if not row:
             return MyNurse(linked=False)
+        mine = {k for k in (user.empno, user.email.lower()) if k}
         for n in json.loads(row["data"]):
-            if str(n.get("account_email", "")).strip().lower() == user.email.lower():
+            acc = str(n.get("account_email", "")).strip()
+            if acc and (acc in mine or acc.lower() in mine):
                 return MyNurse(linked=True, nurse=n)
         return MyNurse(linked=False)
     finally:
@@ -358,7 +379,7 @@ def publish_schedule(
             "ON CONFLICT(ward, year, month) DO UPDATE SET data=excluded.data, "
             "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
             (user.ward, body.year, body.month, json.dumps(body.data, ensure_ascii=False),
-             _now(), user.email),
+             _now(), user.key()),
         )
         conn.commit()
     finally:
@@ -448,7 +469,7 @@ def submit_wanted(
             "INSERT INTO wanted_requests (ward, year, month, nurse_email, nurse_name, "
             "start_day, end_day, shift, reason, status, created_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,'pending',?)",
-            (user.ward, body.year, body.month, user.email, user.name,
+            (user.ward, body.year, body.month, user.key(), user.name,
              body.start_day, body.end_day, body.clean_shift(), body.reason, _now()),
         )
         conn.commit()
@@ -474,8 +495,9 @@ def my_wanted(
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM wanted_requests WHERE ward=? AND year=? AND month=? AND nurse_email=? "
-            "ORDER BY start_day", (user.ward, year, month, user.email)
+            "SELECT * FROM wanted_requests WHERE ward=? AND year=? AND month=? "
+            "AND nurse_email IN (?, ?) ORDER BY start_day",
+            (user.ward, year, month, user.key(), user.email or "\x00")
         ).fetchall()
         return [_wanted_item(r) for r in rows]
     finally:
@@ -521,14 +543,15 @@ def decide_wanted(
             "SELECT * FROM wanted_requests WHERE id=?", (req_id,)).fetchone())
     finally:
         conn.close()
-    # 신청자에게 승인/반려 결과 이메일 (미설정 시 무시)
-    if body.status in ("approved", "rejected") and row["nurse_email"]:
+    # 신청자에게 승인/반려 결과 이메일 (미설정·이메일 없는 사번 계정이면 무시)
+    addr = _notify_address(row["nurse_email"]) if body.status in ("approved", "rejected") else None
+    if addr:
         ko = "승인" if body.status == "approved" else "반려"
         rng = f"{item.start_day}일" + (f"~{item.end_day}일" if item.end_day != item.start_day else "")
         subject = f"[듀티원] 원티드 신청이 {ko}되었습니다 ({item.year}년 {item.month}월)"
         text = (f"{item.nurse_name} 님의 {item.year}년 {item.month}월 원티드 신청"
                 f"({rng}, {item.shift})이 {ko}되었습니다.")
-        background.add_task(email_notify.send_email, row["nurse_email"], subject, text)
+        background.add_task(email_notify.send_email, addr, subject, text)
     return item
 
 
@@ -545,7 +568,7 @@ def delete_wanted(
         if row is None:
             raise HTTPException(404, "신청을 찾을 수 없습니다.")
         # 본인 신청이거나 관리자·마스터만 삭제 가능
-        if row["nurse_email"] != user.email and user.role not in ("admin", "master"):
+        if row["nurse_email"] not in (user.key(), user.email) and user.role not in ("admin", "master"):
             raise HTTPException(403, "본인 신청만 취소할 수 있습니다.")
         # 신청 기간이 닫혔으면 부서원은 취소 불가(부서장 문의)
         if user.role == "staff":
@@ -626,7 +649,7 @@ def submit_feedback(
         cur = conn.execute(
             "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
             "VALUES (?,?,?,?,?)",
-            (user.ward, user.email, user.name, body.message, _now()),
+            (user.ward, user.key(), user.name, body.message, _now()),
         )
         conn.commit()
         r = conn.execute("SELECT * FROM feedback WHERE id=?", (cur.lastrowid,)).fetchone()
@@ -638,7 +661,7 @@ def submit_feedback(
     if masters:
         subject = f"[듀티원] 새 피드백 · {user.name}"
         text = (
-            f"{user.name} ({user.email})"
+            f"{user.name} ({user.key()})"
             f"{' · ' + user.ward + '병동' if user.ward else ''} 님이 메시지를 남겼습니다.\n\n"
             f"{body.message}\n\n"
             "— 듀티원 수신함에서 확인하세요."

@@ -75,7 +75,8 @@ def _conn() -> sqlite3.Connection:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
+                empno TEXT UNIQUE,
+                email TEXT UNIQUE,
                 name TEXT NOT NULL,
                 role TEXT NOT NULL,
                 ward TEXT DEFAULT '',
@@ -84,6 +85,31 @@ def _conn() -> sqlite3.Connection:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "empno" not in cols:
+            # 구 스키마(email NOT NULL, empno 없음) → 사번 도입 스키마로 1회 재구축.
+            # 기존 계정은 empno=NULL로 이전되며 이메일 로그인이 계속 동작한다.
+            conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE users_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    empno TEXT UNIQUE,
+                    email TEXT UNIQUE,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    ward TEXT DEFAULT '',
+                    pw_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO users_v2 (id, email, name, role, ward, pw_hash, salt, created_at)
+                    SELECT id, email, name, role, ward, pw_hash, salt, created_at FROM users;
+                DROP TABLE users;
+                ALTER TABLE users_v2 RENAME TO users;
+                COMMIT;
+                """
+            )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS ward_invites (
                 ward TEXT PRIMARY KEY,
@@ -128,8 +154,15 @@ def _hash_pw(password: str, salt: bytes) -> str:
 
 # ---- 스키마 ----
 
+# 사번: 숫자/영문 3~20자 (병원 사번 체계가 달라도 수용)
+EMPNO_PATTERN = r"^[A-Za-z0-9]{3,20}$"
+
+
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    # 사번이 로그인 아이디. (구버전 호환: 사번 없이 이메일만으로도 가입은 허용하되,
+    # 웹 화면은 사번을 필수로 받는다.)
+    empno: str = Field("", description="사번 — 로그인 아이디 (숫자/영문 3~20자)")
+    email: EmailStr | None = Field(None, description="이메일 (선택) — 알림 수신용")
     password: str = Field(..., min_length=8, description="8자 이상")
     name: str = Field(..., min_length=1)
     ward: str = Field("", description="새 병동 개설 시 병동명 (예: 61) — 개설자가 마스터가 됨")
@@ -137,8 +170,12 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    login: str = Field("", description="사번 또는 이메일")
+    email: str = Field("", description="(구버전 호환) 이메일")
     password: str
+
+    def login_id(self) -> str:
+        return (self.login or self.email).strip()
 
 
 class TokenResponse(BaseModel):
@@ -146,6 +183,7 @@ class TokenResponse(BaseModel):
     role: str
     name: str
     ward: str
+    empno: str = ""
 
 
 class UserInfo(BaseModel):
@@ -153,21 +191,35 @@ class UserInfo(BaseModel):
     name: str
     role: str
     ward: str
+    empno: str = ""
+
+    def key(self) -> str:
+        """데이터 연결용 계정 식별자 — 사번이 있으면 사번, 없으면(구계정) 이메일."""
+        return self.empno or self.email
 
 
 class SetRoleRequest(BaseModel):
-    email: EmailStr
+    login: str = Field("", description="대상 사번 또는 이메일")
+    email: str = Field("", description="(구버전 호환) 이메일")
     role: str
+
+    def target(self) -> str:
+        return (self.login or self.email).strip()
 
     def validate_role(self) -> None:
         if self.role not in ROLES:
             raise HTTPException(422, f"역할은 {ROLES} 중 하나여야 합니다.")
 
 
+class SetEmpnoRequest(BaseModel):
+    empno: str = Field(..., pattern=EMPNO_PATTERN, description="내 계정에 등록할 사번")
+
+
 class WardUser(BaseModel):
     email: str
     name: str
     role: str
+    empno: str = ""
 
 
 class InviteInfo(BaseModel):
@@ -178,14 +230,29 @@ class InviteInfo(BaseModel):
 # ---- 토큰/의존성 ----
 
 def _make_token(user: sqlite3.Row) -> str:
+    # sub는 내부 id — 사번/이메일이 나중에 바뀌어도 토큰이 계속 유효하다.
     payload = {
-        "sub": user["email"],
+        "sub": f"id:{user['id']}",
         "name": user["name"],
         "role": user["role"],
         "ward": user["ward"],
         "exp": int(time.time()) + TOKEN_TTL_SECONDS,
     }
     return jwt.encode(payload, _secret(), algorithm=_ALGO)
+
+
+def _user_info(u: sqlite3.Row) -> UserInfo:
+    return UserInfo(email=u["email"] or "", name=u["name"], role=u["role"],
+                    ward=u["ward"], empno=u["empno"] or "")
+
+
+def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:
+    """사번 우선, 다음 이메일로 계정 조회."""
+    u = conn.execute("SELECT * FROM users WHERE empno=?", (login_id,)).fetchone()
+    if u is None and "@" in login_id:
+        u = conn.execute(
+            "SELECT * FROM users WHERE email=?", (login_id.lower(),)).fetchone()
+    return u
 
 
 def get_current_user(
@@ -207,14 +274,18 @@ def get_current_user(
     # 역할·병동은 토큰이 아닌 DB 기준 — 강등/승격이 즉시 반영된다(토큰은 신원+만료만).
     conn = _conn()
     try:
-        u = conn.execute(
-            "SELECT name, role, ward FROM users WHERE email=?", (sub,)
-        ).fetchone()
+        if sub.startswith("id:"):
+            u = conn.execute(
+                "SELECT * FROM users WHERE id=?", (sub.removeprefix("id:"),)
+            ).fetchone()
+        else:
+            # 구버전 토큰(sub=email) 호환 — TTL(12시간)이 지나면 자연 소멸
+            u = conn.execute("SELECT * FROM users WHERE email=?", (sub,)).fetchone()
     finally:
         conn.close()
     if u is None:
         raise HTTPException(401, "계정을 찾을 수 없습니다. 다시 로그인해 주세요.")
-    return UserInfo(email=sub, name=u["name"], role=u["role"], ward=u["ward"])
+    return _user_info(u)
 
 
 def require_roles(*roles: str):
@@ -267,22 +338,33 @@ def register(body: RegisterRequest) -> TokenResponse:
                 "INSERT OR REPLACE INTO ward_invites (ward, code) VALUES (?, ?)",
                 (ward, _new_code()),
             )
+        import re as _re
+        empno = body.empno.strip()
+        email = body.email.lower() if body.email else None
+        if empno and not _re.fullmatch(EMPNO_PATTERN, empno):
+            raise HTTPException(422, "사번은 숫자/영문 3~20자로 입력하세요.")
+        if not empno and not email:
+            raise HTTPException(422, "사번(또는 이메일)을 입력하세요.")
         salt = secrets.token_bytes(16)
         try:
-            conn.execute(
-                "INSERT INTO users (email, name, role, ward, pw_hash, salt) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (body.email.lower(), body.name, role, ward,
+            cur = conn.execute(
+                "INSERT INTO users (empno, email, name, role, ward, pw_hash, salt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (empno or None, email, body.name, role, ward,
                  _hash_pw(body.password, salt), salt.hex()),
             )
             conn.commit()
         except sqlite3.IntegrityError:
+            # 어느 쪽이 겹쳤는지 구분해 안내 (사번 중복 확인 요구사항)
+            if empno and conn.execute(
+                    "SELECT 1 FROM users WHERE empno=?", (empno,)).fetchone():
+                raise HTTPException(409, "이미 가입된 사번입니다. 본인 사번이 맞는지 확인하거나 로그인하세요.")
             raise HTTPException(409, "이미 가입된 이메일입니다.")
         user = conn.execute(
-            "SELECT * FROM users WHERE email=?", (body.email.lower(),)
-        ).fetchone()
+            "SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
         return TokenResponse(token=_make_token(user), role=user["role"],
-                             name=user["name"], ward=user["ward"])
+                             name=user["name"], ward=user["ward"],
+                             empno=user["empno"] or "")
     except HTTPException:
         try:
             conn.rollback()
@@ -326,18 +408,20 @@ def rotate_invite(
 
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest) -> TokenResponse:
+    login_id = body.login_id()
+    if not login_id:
+        raise HTTPException(422, "사번(또는 이메일)을 입력하세요.")
     conn = _conn()
     try:
-        user = conn.execute(
-            "SELECT * FROM users WHERE email=?", (body.email.lower(),)
-        ).fetchone()
+        user = _find_by_login(conn, login_id)
         if user is None:
-            raise HTTPException(401, "이메일 또는 비밀번호가 올바르지 않습니다.")
+            raise HTTPException(401, "사번(이메일) 또는 비밀번호가 올바르지 않습니다.")
         expect = _hash_pw(body.password, bytes.fromhex(user["salt"]))
         if not secrets.compare_digest(expect, user["pw_hash"]):
-            raise HTTPException(401, "이메일 또는 비밀번호가 올바르지 않습니다.")
+            raise HTTPException(401, "사번(이메일) 또는 비밀번호가 올바르지 않습니다.")
         return TokenResponse(token=_make_token(user), role=user["role"],
-                             name=user["name"], ward=user["ward"])
+                             name=user["name"], ward=user["ward"],
+                             empno=user["empno"] or "")
     finally:
         conn.close()
 
@@ -355,10 +439,11 @@ def ward_users(
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT email, name, role FROM users WHERE ward=? ORDER BY name",
+            "SELECT empno, email, name, role FROM users WHERE ward=? ORDER BY name",
             (user.ward,),
         ).fetchall()
-        return [WardUser(email=r["email"], name=r["name"], role=r["role"]) for r in rows]
+        return [WardUser(email=r["email"] or "", name=r["name"], role=r["role"],
+                         empno=r["empno"] or "") for r in rows]
     finally:
         conn.close()
 
@@ -374,18 +459,50 @@ def set_role(
     구분하지 않고 404로 처리한다(타 병동 권한 상승 차단).
     """
     body.validate_role()
+    target = body.target()
+    if not target:
+        raise HTTPException(422, "대상 사번(또는 이메일)을 입력하세요.")
     conn = _conn()
     try:
-        cur = conn.execute(
-            "UPDATE users SET role=? WHERE email=? AND ward=?",
-            (body.role, body.email.lower(), _master.ward),
-        )
+        u = _find_by_login(conn, target)
+        if u is None or u["ward"] != _master.ward:
+            raise HTTPException(404, "해당 사번(이메일)의 사용자가 없습니다.")
+        conn.execute("UPDATE users SET role=? WHERE id=?", (body.role, u["id"]))
         conn.commit()
-        if cur.rowcount == 0:
-            raise HTTPException(404, "해당 이메일의 사용자가 없습니다.")
-        u = conn.execute(
-            "SELECT * FROM users WHERE email=?", (body.email.lower(),)
-        ).fetchone()
-        return UserInfo(email=u["email"], name=u["name"], role=u["role"], ward=u["ward"])
+        u = conn.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone()
+        return _user_info(u)
+    finally:
+        conn.close()
+
+
+@router.post("/set-empno", response_model=UserInfo)
+def set_empno(
+    body: SetEmpnoRequest,
+    user: Annotated[UserInfo, Depends(get_current_user)],
+) -> UserInfo:
+    """사번 없는 구계정에 사번을 1회 등록 (본인만).
+
+    등록 후에는 사번이 계정 식별자가 되므로, 이메일로 저장돼 있던 원티드 신청도
+    사번 기준으로 함께 이관한다(명단 계정 연결은 부서장이 드롭다운에서 다시 선택).
+    """
+    empno = body.empno.strip()
+    conn = _conn()
+    try:
+        if user.empno:
+            raise HTTPException(409, "이미 사번이 등록된 계정입니다.")
+        taken = conn.execute("SELECT 1 FROM users WHERE empno=?", (empno,)).fetchone()
+        if taken:
+            raise HTTPException(409, "이미 가입된 사번입니다. 본인 사번이 맞는지 확인하세요.")
+        conn.execute("UPDATE users SET empno=? WHERE email=? AND ward=?",
+                     (empno, user.email, user.ward))
+        try:
+            conn.execute(
+                "UPDATE wanted_requests SET nurse_email=? WHERE nurse_email=? AND ward=?",
+                (empno, user.email, user.ward))
+        except sqlite3.OperationalError:
+            pass  # wanted 테이블이 아직 없으면(첫 사용) 이관할 것도 없다
+        conn.commit()
+        u = conn.execute("SELECT * FROM users WHERE empno=?", (empno,)).fetchone()
+        return _user_info(u)
     finally:
         conn.close()

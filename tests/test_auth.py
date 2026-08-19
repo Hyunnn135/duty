@@ -233,3 +233,110 @@ def test_register_empty_ward_rejected(client):
     r = client.post("/api/auth/register", json={
         "email": "e@duty.kr", "password": "password123", "name": "e", "ward": "  "})
     assert r.status_code == 422
+
+
+# ---- 사번 로그인 전환 ----
+
+def test_empno_register_login_duplicate(client):
+    """사번으로 가입·로그인, 중복 사번은 409로 명확히 안내."""
+    r = client.post("/api/auth/register", json={
+        "empno": "100275", "password": "password123", "name": "김간호", "ward": "71"})
+    assert r.status_code == 200 and r.json()["empno"] == "100275"
+    # 사번 로그인
+    ok = client.post("/api/auth/login", json={"login": "100275", "password": "password123"})
+    assert ok.status_code == 200 and ok.json()["role"] == "master"
+    # /me 에 사번 포함
+    me = client.get("/api/auth/me", headers=_auth(ok.json()["token"])).json()
+    assert me["empno"] == "100275"
+    # 같은 사번으로 재가입 → 409 (사번 안내)
+    code = _invite_code("71")
+    dup = client.post("/api/auth/register", json={
+        "empno": "100275", "password": "password123", "name": "다른사람",
+        "invite_code": code})
+    assert dup.status_code == 409 and "사번" in dup.json()["detail"]
+    # 형식 위반 사번 → 422
+    bad = client.post("/api/auth/register", json={
+        "empno": "사번한글", "password": "password123", "name": "x", "invite_code": code})
+    assert bad.status_code == 422
+
+
+def test_legacy_email_login_and_set_empno_migration(client):
+    """이메일 구계정은 계속 로그인 가능하고, 사번 등록 시 원티드 신청도 이관된다."""
+    legacy = _register(client, "boss@duty.kr")  # 이메일 기반 가입(구버전 호환)
+    h = _auth(legacy["token"])
+    # 이메일 키로 원티드 신청 저장
+    r = client.post("/api/wanted", json={
+        "year": 2026, "month": 9, "start_day": 5, "end_day": 5, "shift": "O"}, headers=h)
+    assert r.status_code == 200
+    # 사번 등록 → 신청이 사번 키로 이관되어 계속 조회된다
+    s = client.post("/api/auth/set-empno", json={"empno": "900360"}, headers=h)
+    assert s.status_code == 200 and s.json()["empno"] == "900360"
+    mine = client.get("/api/wanted/mine?year=2026&month=9", headers=h).json()
+    assert len(mine) == 1 and mine[0]["nurse_email"] == "900360"
+    # 사번 재등록은 409, 타인이 같은 사번 등록도 409
+    assert client.post("/api/auth/set-empno", json={"empno": "900361"},
+                       headers=h).status_code == 409
+    other = _register(client, "s2@duty.kr")
+    assert client.post("/api/auth/set-empno", json={"empno": "900360"},
+                       headers=_auth(other["token"])).status_code == 409
+    # 사번 로그인도 동작
+    assert client.post("/api/auth/login", json={
+        "login": "900360", "password": "password123"}).status_code == 200
+
+
+def test_roster_link_by_empno(client):
+    """명단 계정 연결(account_email 필드)에 사번을 저장해도 /api/me/nurse 가 연결한다."""
+    master = _register(client, "m@duty.kr")
+    r = client.post("/api/auth/register", json={
+        "empno": "100265", "password": "password123", "name": "박하윤",
+        "invite_code": _invite_code("61")})
+    assert r.status_code == 200
+    staff_tok = r.json()["token"]
+    nurses = [{"id": "n1", "name": "박하윤", "team": 1, "account_email": "100265"}]
+    assert client.put("/api/roster", json={"nurses": nurses},
+                      headers=_auth(master["token"])).status_code == 200
+    mn = client.get("/api/me/nurse", headers=_auth(staff_tok)).json()
+    assert mn["linked"] and mn["nurse"]["name"] == "박하윤"
+
+
+def test_set_role_by_empno(client):
+    """역할 변경 대상도 사번으로 지정 가능."""
+    master = _register(client, "m@duty.kr")
+    client.post("/api/auth/register", json={
+        "empno": "100266", "password": "password123", "name": "파트장",
+        "invite_code": _invite_code("61")})
+    r = client.post("/api/auth/set-role", json={"login": "100266", "role": "admin"},
+                    headers=_auth(master["token"]))
+    assert r.status_code == 200 and r.json()["role"] == "admin"
+
+
+def test_legacy_db_schema_migrates(tmp_path, monkeypatch):
+    """구 스키마(email NOT NULL, empno 없음) DB가 자동 재구축되고 기존 계정이 유지된다."""
+    import secrets as sec
+    import sqlite3
+    from app.auth import _hash_pw
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL,
+        ward TEXT DEFAULT '', pw_hash TEXT NOT NULL, salt TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    salt = sec.token_bytes(16)
+    conn.execute(
+        "INSERT INTO users (email,name,role,ward,pw_hash,salt) VALUES (?,?,?,?,?,?)",
+        ("old@duty.kr", "구계정", "master", "61", _hash_pw("password123", salt), salt.hex()))
+    conn.commit(); conn.close()
+    monkeypatch.setenv("DUTY_DB", str(db))
+    monkeypatch.setenv("DUTY_SECRET", "test-secret")
+    from app.main import app
+    c = TestClient(app)
+    r = c.post("/api/auth/login", json={"login": "old@duty.kr", "password": "password123"})
+    assert r.status_code == 200, r.text
+    # 재구축 후 신규 사번 가입도 계속 동작 (초대 코드는 레거시 DB라 API로 첫 발급)
+    inv = c.get("/api/auth/invite", headers=_auth(r.json()["token"]))
+    assert inv.status_code == 200
+    r2 = c.post("/api/auth/register", json={
+        "empno": "770001", "password": "password123", "name": "신규",
+        "invite_code": inv.json()["code"]})
+    assert r2.status_code == 200
