@@ -89,27 +89,37 @@ def _conn() -> sqlite3.Connection:
         if "empno" not in cols:
             # 구 스키마(email NOT NULL, empno 없음) → 사번 도입 스키마로 1회 재구축.
             # 기존 계정은 empno=NULL로 이전되며 이메일 로그인이 계속 동작한다.
-            conn.executescript(
-                """
-                BEGIN;
-                CREATE TABLE users_v2 (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    empno TEXT UNIQUE,
-                    email TEXT UNIQUE,
-                    name TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    ward TEXT DEFAULT '',
-                    pw_hash TEXT NOT NULL,
-                    salt TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT INTO users_v2 (id, email, name, role, ward, pw_hash, salt, created_at)
-                    SELECT id, email, name, role, ward, pw_hash, salt, created_at FROM users;
-                DROP TABLE users;
-                ALTER TABLE users_v2 RENAME TO users;
-                COMMIT;
-                """
-            )
+            # 쓰기 락(BEGIN IMMEDIATE) 아래에서 다시 확인(이중 확인 잠금) — 두 워커가
+            # 동시에 진입해도 한쪽만 재구축하고, 그 사이 등록된 empno가 empno 없는
+            # INSERT-SELECT 복사에 지워지는 일이 없게 한다.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+                if "empno" not in cols2:
+                    conn.execute(
+                        """CREATE TABLE users_v2 (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            empno TEXT UNIQUE,
+                            email TEXT UNIQUE,
+                            name TEXT NOT NULL,
+                            role TEXT NOT NULL,
+                            ward TEXT DEFAULT '',
+                            pw_hash TEXT NOT NULL,
+                            salt TEXT NOT NULL,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )"""
+                    )
+                    conn.execute(
+                        "INSERT INTO users_v2 (id, email, name, role, ward, pw_hash, "
+                        "salt, created_at) SELECT id, email, name, role, ward, pw_hash, "
+                        "salt, created_at FROM users"
+                    )
+                    conn.execute("DROP TABLE users")
+                    conn.execute("ALTER TABLE users_v2 RENAME TO users")
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                raise
         conn.execute(
             """CREATE TABLE IF NOT EXISTS ward_invites (
                 ward TEXT PRIMARY KEY,
@@ -247,8 +257,9 @@ def _user_info(u: sqlite3.Row) -> UserInfo:
 
 
 def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:
-    """사번 우선, 다음 이메일로 계정 조회."""
-    u = conn.execute("SELECT * FROM users WHERE empno=?", (login_id,)).fetchone()
+    """사번 우선, 다음 이메일로 계정 조회. 사번은 대문자 정규화(저장과 동일 규칙)."""
+    u = conn.execute(
+        "SELECT * FROM users WHERE empno=?", (login_id.upper(),)).fetchone()
     if u is None and "@" in login_id:
         u = conn.execute(
             "SELECT * FROM users WHERE email=?", (login_id.lower(),)).fetchone()
@@ -339,7 +350,9 @@ def register(body: RegisterRequest) -> TokenResponse:
                 (ward, _new_code()),
             )
         import re as _re
-        empno = body.empno.strip()
+        # 사번은 대문자로 정규화해 저장 — "abc1"/"ABC1"이 서로 다른 계정이 되거나
+        # 로그인 시 대소문자 오타로 실패하는 일을 막는다(숫자 사번은 영향 없음).
+        empno = body.empno.strip().upper()
         email = body.email.lower() if body.email else None
         if empno and not _re.fullmatch(EMPNO_PATTERN, empno):
             raise HTTPException(422, "사번은 숫자/영문 3~20자로 입력하세요.")
@@ -485,7 +498,7 @@ def set_empno(
     등록 후에는 사번이 계정 식별자가 되므로, 이메일로 저장돼 있던 원티드 신청도
     사번 기준으로 함께 이관한다(명단 계정 연결은 부서장이 드롭다운에서 다시 선택).
     """
-    empno = body.empno.strip()
+    empno = body.empno.strip().upper()
     conn = _conn()
     try:
         if user.empno:

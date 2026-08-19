@@ -536,7 +536,7 @@ def decide_wanted(
             raise HTTPException(404, "신청을 찾을 수 없습니다.")
         conn.execute(
             "UPDATE wanted_requests SET status=?, decided_by=?, decided_at=? WHERE id=?",
-            (body.status, user.email, _now(), req_id),
+            (body.status, user.key(), _now(), req_id),
         )
         conn.commit()
         item = _wanted_item(conn.execute(
