@@ -383,6 +383,8 @@ class ScheduleRequest(BaseModel):
             if w.nurse_id not in ids:
                 raise ValueError(f"wanted의 간호사 id '{w.nurse_id}' 가 명단에 없습니다.")
         for r in self.requests:
+            if r.day >= nd:
+                raise ValueError(f"requests day {r.day} 가 기간({nd}일)을 벗어납니다.")
             if r.nurse_id not in ids:
                 raise ValueError(f"requests의 간호사 id '{r.nurse_id}' 가 명단에 없습니다.")
         for nid in self.carry_over:

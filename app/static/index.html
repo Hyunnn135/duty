@@ -383,10 +383,12 @@ async function submitAuth() {
 function logout() { localStorage.removeItem("duty_token"); location.reload(); }
 async function initAuth() {
   if (!token()) { showAuth(true); return; }
-  const res = await fetch("/api/auth/me", { headers: authHeaders() });
-  if (!res.ok) { localStorage.removeItem("duty_token"); showAuth(true); return; }
-  ME = await res.json();
-  onAuthed();
+  try {
+    const res = await fetch("/api/auth/me", { headers: authHeaders() });
+    if (!res.ok) { localStorage.removeItem("duty_token"); showAuth(true); return; }
+    ME = await res.json();
+    onAuthed();
+  } catch (e) { showAuth(true); authError("서버에 연결할 수 없습니다 — 잠시 후 새로고침해 주세요."); }
 }
 function isAdmin() { return ME && (ME.role === "admin" || ME.role === "master"); }
 function isMaster() { return ME && ME.role === "master"; }
@@ -395,9 +397,16 @@ async function api(method, path, body) {
   const opt = { method, headers: { ...authHeaders() } };
   if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   const res = await fetch(path, opt);
-  if (res.status === 401) { showAuth(true); throw new Error("로그인이 필요합니다"); }
+  if (res.status === 401) {
+    localStorage.removeItem("duty_token");  // 죽은 토큰으로 401 반복 방지
+    showAuth(true); throw new Error("로그인이 필요합니다");
+  }
   let data = null; try { data = await res.json(); } catch (e) {}
-  if (!res.ok) throw new Error((data && data.detail) || ("오류 " + res.status));
+  if (!res.ok) {
+    const err = new Error((data && data.detail) || ("오류 " + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -443,7 +452,7 @@ async function rotateInvite() {
   } catch (e) { inviteMsg.textContent = "재발급 실패: " + e.message; }
 }
 function normRosterRow(n) {
-  return { id: n.id || genId(), name: n.name || "", team: n.team || 1,
+  return { id: n.id || genId(), name: n.name || "", team: [1,2,3].includes(+n.team) ? +n.team : 1,
     rank: n.seniority_rank || n.rank || 999, night: n.night_eligible !== false,
     trainee: !!n.is_trainee, trainer: n.trainer || "", account: n.account_email || "",
     solo: soloCode(n.solo_day, n.solo_evening, n.solo_night) };
@@ -562,7 +571,7 @@ function renderRoster() {
       tr.innerHTML =
         `<td class="chk drag-handle" style="color:#94a3b8" title="드래그로 순서·팀 이동" onpointerdown="dragStart(event)">⠿</td>` +
         `<td class="chk" style="color:#64748b;font-weight:600">${pos + 1}</td>` +
-        `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)"></td>` +
+        `<td><input value="${esc(r.name)}" oninput="setR(${i},'name',this.value)" onchange="renderRoster()"></td>` +
         `<td class="chk"><input type="checkbox" ${r.night?"checked":""} onchange="setR(${i},'night',this.checked)"></td>` +
         `<td class="chk"><input type="checkbox" ${r.trainee?"checked":""} onchange="setR(${i},'trainee',this.checked)"></td>` +
         `<td><select onchange="setR(${i},'trainer',this.value)"><option value="">—</option>${others.map(n=>`<option ${n===r.trainer?"selected":""}>${esc(n)}</option>`).join("")}</select></td>` +
@@ -581,12 +590,14 @@ function renderRoster() {
   }
 }
 /* ---- iOS 스타일 드래그 정렬: 잡으면 떠오르고, 다른 행이 실시간으로 비켜주고, 놓으면 안착 ---- */
-let DRAG = null; // {row, grabOff}
+let DRAG = null; // {row, grabOff, pid}
+let COMMIT_PENDING = false; // 안착 애니메이션(180ms) 중 새 드래그 차단
 function dragStart(e) {
   if (e.button !== undefined && e.button !== 0) return;
+  if (DRAG || COMMIT_PENDING) return; // 두 번째 손가락/커밋 전 재드래그 무시
   const row = e.target.closest("tr");
   if (!row) return;
-  DRAG = { row, grabOff: e.clientY - row.getBoundingClientRect().top };
+  DRAG = { row, grabOff: e.clientY - row.getBoundingClientRect().top, pid: e.pointerId };
   row.classList.add("drag-lift");
   document.body.classList.add("dragging-roster");
   // 캡처 대신 window 리스너 사용: 행이 다른 팀 표로 재부착될 때 크롬이 포인터 캡처를
@@ -605,7 +616,7 @@ function _setLiftY(clientY) {
   row.style.transform = `translateY(${clientY - DRAG.grabOff - nat}px)`;
 }
 function _dragMove(e) {
-  if (!DRAG) return;
+  if (!DRAG || (e.pointerId !== undefined && e.pointerId !== DRAG.pid)) return;
   const row = DRAG.row;
   // 포인터가 가리키는 삽입 위치(세 팀 표 전체에서) 탐색
   let target = null;
@@ -639,20 +650,22 @@ function _dragMove(e) {
   _setLiftY(e.clientY);
 }
 function _dragEnd(e) {
-  if (!DRAG) return;
+  if (!DRAG || (e.pointerId !== undefined && e.pointerId !== DRAG.pid)) return;
   const row = DRAG.row;
   DRAG = null;
   window.removeEventListener("pointermove", _dragMove);
   window.removeEventListener("pointerup", _dragEnd);
   window.removeEventListener("pointercancel", _dragEnd);
   document.body.classList.remove("dragging-roster");
-  // 제자리로 스르륵 안착 후 배열에 확정
+  // 제자리로 스르륵 안착 후 배열에 확정 (확정 전까지 새 드래그 차단)
+  COMMIT_PENDING = true;
   row.style.transition = "transform .16s ease";
   row.style.transform = "";
   setTimeout(() => {
     row.classList.remove("drag-lift");
     row.style.transition = "";
     _commitDomOrder();
+    COMMIT_PENDING = false;
   }, 180);
 }
 // 현재 DOM 순서(팀 tbody별 행 순서) → roster 배열로 확정
@@ -706,7 +719,16 @@ function soloCode(d, e, n) {
   if (d !== false && e !== false && !n) return "de";
   return "none";
 }
-function setR(i, k, v) { roster[i][k] = v; if (k === "name") renderRoster(); }
+// 이름은 입력 중(oninput) 재렌더하지 않는다 — 매 키 입력마다 표를 다시 그리면
+// 포커스가 날아가 한글 조합(IME)이 끊긴다. 교육자 드롭다운 갱신은 입력을 마친
+// 시점(onchange=포커스 이탈)에 renderRoster()로 처리한다.
+function setR(i, k, v) { roster[i][k] = v; }
+// 동명이인 감지 — 이름이 곧 연결 키(원티드·이월·수동수정)라서 중복되면 데이터가 섞인다.
+function dupNames() {
+  const seen = new Set(), dup = new Set();
+  for (const r of roster) { const n = r.name.trim(); if (!n) continue; if (seen.has(n)) dup.add(n); seen.add(n); }
+  return [...dup];
+}
 function delNurse(i) { roster.splice(i, 1); renderRoster(); }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
 
@@ -715,6 +737,8 @@ let SCHED = null; // {schedules:[{name,shifts,labels,counts}], num_days, year, m
 function nid(i) { return "n" + i; }
 // 신청관리에서 '승인'된 웹 원티드를 생성 페이로드에 자동 반영 (USER_GUIDE 2-B).
 // 계정 이메일 → 명단 이름으로 연결하고, 없으면 신청자 표시 이름으로 매칭한다.
+// 생성 직전 자동 수집(이월·승인 신청) 중 발생한 경고 — 조용히 빠뜨리지 않고 표시한다.
+let PAYLOAD_WARNINGS = [];
 async function fetchApprovedWanted(byName, y, m) {
   try {
     const list = await api("GET", `/api/wanted?year=${y}&month=${m}`);
@@ -729,12 +753,20 @@ async function fetchApprovedWanted(byName, y, m) {
       if (w.status !== "approved") continue;
       const name = byAccount[(w.nurse_email || "").toLowerCase()] || w.nurse_name;
       const id = byName[name];
-      if (!id || w.start_day > nd) continue;
+      if (!id) {
+        PAYLOAD_WARNINGS.push(`승인 신청자 '${name}'을(를) 명단에서 찾지 못해 제외했습니다 (계정 연결 또는 이름 확인)`);
+        continue;
+      }
+      if (w.start_day > nd) continue;
       out.push({ nurse_id: id, start_day: w.start_day - 1, end_day: Math.min(w.end_day, nd) - 1,
         shift: ["D","E","N","O"].includes(w.shift) ? w.shift : "O" });
     }
     return out;
-  } catch (e) { return []; }  // 서버 미가용 시 텍스트 입력분만 사용
+  } catch (e) {
+    // 네트워크/서버 오류를 '신청 없음'과 구분해 경고 — 승인분이 조용히 빠지면 안 된다.
+    PAYLOAD_WARNINGS.push("승인된 원티드 신청을 불러오지 못했습니다 — 텍스트 입력분만 반영됩니다");
+    return [];
+  }
 }
 // 한국 공휴일(대체공휴일 포함) 자동 표 — "연-월": [일...]. 임시공휴일은 미포함(지정 시 알림).
 // ⚠️ 매년 말 다음 해 공휴일을 확인해 갱신할 것.
@@ -770,9 +802,14 @@ async function fetchAutoCarry(byName, y, m) {
       if (labs.length) carry[id] = labs;
     }
     return carry;
-  } catch (e) { return {}; }  // 발행된 전월 표 없음 → 이월 미적용
+  } catch (e) {
+    if (e && e.status === 404) return {};  // 발행된 전월 표 없음 → 이월 미적용(정상)
+    PAYLOAD_WARNINGS.push("전월 근무표(이월)를 불러오지 못했습니다 — 이월 없이 생성됩니다");
+    return {};
+  }
 }
 async function buildPayload() {
+  PAYLOAD_WARNINGS = [];
   const teamPos = { 1: 0, 2: 0, 3: 0 };  // 팀 내 위치 = 경력순위
   const nurses = roster.filter(r => r.name.trim()).map((r, i) => {
     const [sd, se, sn] = soloFlags(r.solo);
@@ -783,7 +820,12 @@ async function buildPayload() {
     return o;
   });
   const byName = Object.fromEntries(nurses.map(n => [n.name, n.id]));
-  nurses.forEach((n, k) => { const r = roster.filter(x=>x.name.trim())[k]; if (r.trainee && r.trainer && byName[r.trainer]) n.trainer_id = byName[r.trainer]; });
+  nurses.forEach((n, k) => {
+    const r = roster.filter(x=>x.name.trim())[k];
+    if (!r.trainee || !r.trainer) return;
+    if (byName[r.trainer]) n.trainer_id = byName[r.trainer];
+    else PAYLOAD_WARNINGS.push(`'${n.name}'의 교육자 '${r.trainer}'을(를) 명단에서 찾지 못했습니다 — 동행 배정이 적용되지 않습니다`);
+  });
 
   const st = (min, tgt) => ({ min: +min, target: +tgt });
   const mD=minD.value,tD=tgtD.value,mE=minE.value,tE=tgtE.value,mN=minN.value,tN=tgtN.value;
@@ -792,7 +834,8 @@ async function buildPayload() {
   const staffing = { weekday, weekend, holiday: weekday };
 
   const holidays = holidaysFor(+year.value, +month.value);
-  const wanted = parseWanted(byName), pre = parsePre(byName);
+  const nd = new Date(+year.value, +month.value, 0).getDate();
+  const wanted = parseWanted(byName, nd), pre = parsePre(byName, nd);
   const carry = await fetchAutoCarry(byName, +year.value, +month.value);
   // 승인된 웹 신청 병합(중복 제거)
   const seen = new Set(wanted.map(w => `${w.nurse_id}|${w.start_day}|${w.end_day}|${w.shift}`));
@@ -825,7 +868,7 @@ async function buildPayload() {
   }
   return payload;
 }
-function parseWanted(byName) {
+function parseWanted(byName, nd) {
   // 지원 형식: "이름,시작,종료,종류" / "이름,일,종류" / "이름,시작,종료" / "이름,일"
   const SH = ["D","E","N","O"];
   const out = [];
@@ -842,25 +885,34 @@ function parseWanted(byName) {
       if (SH.includes(f2)) sh = f2;          // 이름,일,종류(D/E/N/O)
       else { const pe = parseInt(p[2],10)-1; if (!isNaN(pe)) e = pe; }  // 이름,시작,종료
     }
-    out.push({ nurse_id: byName[p[0]], start_day: s, end_day: e, shift: SH.includes(sh)?sh:"O" });
+    if (nd && (s >= nd || s < 0)) { PAYLOAD_WARNINGS.push(`원티드 '${p[0]},${p[1]}' — 날짜가 이 달(${nd}일) 범위를 벗어나 제외했습니다`); continue; }
+    if (nd) e = Math.min(e, nd - 1);
+    out.push({ nurse_id: byName[p[0]], start_day: s, end_day: Math.max(s, e), shift: SH.includes(sh)?sh:"O" });
   }
   return out;
 }
-function parsePre(byName) {
+function parsePre(byName, nd) {
   const out = [];
   for (const line of document.getElementById("preassigned").value.split("\n")) {
     const p = line.split(",").map(s=>s.trim()); if (p.length<3||!byName[p[0]]) continue;
     const d = parseInt(p[1],10)-1; if (isNaN(d)) continue;
+    if (nd && (d >= nd || d < 0)) { PAYLOAD_WARNINGS.push(`사전배정 '${p[0]},${p[1]}' — 날짜가 이 달(${nd}일) 범위를 벗어나 제외했습니다`); continue; }
     out.push({ nurse_id: byName[p[0]], day: d, code: p[2] });
   }
   return out;
 }
 async function generate() {
-  if (!isAdmin()) return;
-  const btn = genBtn; const payload = await buildPayload();
+  if (!isAdmin() || genBtn.disabled) return;
+  const btn = genBtn;
+  // buildPayload가 서버 왕복을 포함하므로, 더블클릭으로 비싼 풀이가 두 번 돌지
+  // 않도록 어떤 await보다 먼저 두 버튼을 잠근다.
+  btn.disabled = true; candBtn.disabled = true; btn.textContent = "생성 중...";
+  try {
+  const dups = dupNames();
+  if (dups.length) { genState.textContent = "❌ 생성 불가"; showGenErr(`명단에 같은 이름이 2명 이상 있습니다: ${dups.join(", ")}\n이름은 신청·이월·수정의 연결 키라서 중복되면 데이터가 섞입니다. 이름 뒤에 구분(예: A/B)을 붙여 주세요.`); return; }
+  const payload = await buildPayload();
   if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
   const slow = payload.time_limit_seconds >= 60;
-  btn.disabled = true; btn.textContent = "생성 중...";
   genState.textContent = slow ? "⏳ 최적 근무표 계산 중… (운영 모드는 약 1~2분 소요됩니다. 창을 닫지 마세요)" : "⏳ 최적 근무표 계산 중...";
   try {
     const res = await fetch("/api/schedule", { method: "POST",
@@ -880,10 +932,11 @@ async function generate() {
       teams: Object.fromEntries(payload.nurses.map(n=>[n.name,n.team])),
       carry_over: payload.carry_over, nurseIds: Object.fromEntries(payload.nurses.map(n=>[n.name,n.id])) };
     store();
-    genState.textContent = "✅ 완료";
+    genState.textContent = "✅ 완료" + (PAYLOAD_WARNINGS.length ? " · ⚠ " + PAYLOAD_WARNINGS.join(" / ") : "");
     switchTab("board"); renderBoard();
   } catch (e) { genState.textContent = "요청 실패: " + e.message; }
-  finally { btn.disabled = false; btn.textContent = "근무표 생성"; }
+  } catch (e) { genState.textContent = "요청 실패: " + e.message;
+  } finally { btn.disabled = false; candBtn.disabled = false; btn.textContent = "근무표 생성"; }
 }
 
 /* 생성 불가 안내 팝업 */
@@ -896,11 +949,13 @@ function closeGenErr() { document.getElementById("genErrModal").style.display = 
 /* ============================ 여러 안 생성(품질 수렴 집합) ============================ */
 let CANDS = [], CAND_PAYLOAD = null;
 async function generateCandidates() {
-  if (!isAdmin()) return;
+  if (!isAdmin() || candBtn.disabled) return;
+  candBtn.disabled = true; genBtn.disabled = true;  // 더블클릭·교차 실행 방지(어떤 await보다 먼저)
+  try {
   const payload = await buildPayload();
   if (payload.nurses.length === 0) { genState.textContent = "간호사를 한 명 이상 입력하세요."; return; }
   CAND_PAYLOAD = payload;
-  candBtn.disabled = true; genState.textContent = "⏳ 동일 품질 후보들을 계산 중...";
+  genState.textContent = "⏳ 동일 품질 후보들을 계산 중...";
   candBox.innerHTML = "";
   try {
     const data = await api("POST", "/api/schedule/candidates?count=3", payload);
@@ -923,7 +978,8 @@ async function generateCandidates() {
     html += `</div>`;
     candBox.innerHTML = html;
   } catch (e) { genState.textContent = "요청 실패: " + e.message; }
-  finally { candBtn.disabled = false; }
+  } catch (e) { genState.textContent = "요청 실패: " + e.message;
+  } finally { candBtn.disabled = false; genBtn.disabled = false; }
 }
 function applyCandidate(i) {
   const c = CANDS[i], p = CAND_PAYLOAD; if (!c || !p) return;
@@ -935,9 +991,17 @@ function applyCandidate(i) {
 }
 
 /* ============================ 저장/복원 ============================ */
-function store() { try { localStorage.setItem("duty_sched", JSON.stringify(SCHED)); } catch (e) {} }
+// 로컬 저장은 '미발행 초안' 전용 — 발행본을 조회·수정하는 중에는 저장하지 않아
+// (과거 달을 보다가 셀을 눌러도) 생성해 둔 초안이 덮어써지지 않게 한다.
+function store() {
+  if (SCHED && SCHED._published) return;
+  try { localStorage.setItem("duty_sched", JSON.stringify(SCHED)); } catch (e) {}
+}
+function readLocal() { try { const s = localStorage.getItem("duty_sched"); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
 
 async function saveRoster() {
+  const dups = dupNames();
+  if (dups.length) { rosterMsg(`⚠ 같은 이름이 2명 이상 있습니다: ${dups.join(", ")} — 이름 뒤에 구분(예: A/B)을 붙인 뒤 저장해 주세요.`, true); return; }
   try {
     const teamPos = { 1: 0, 2: 0, 3: 0 };  // 팀 내 위치 = 경력순위(위=1)
     const nurses = roster.filter(r => r.name.trim()).map(r => {
@@ -967,18 +1031,32 @@ async function publishSchedule() {
 function pubMsg(m, err) { const el = document.getElementById("pubMsg"); if (el) { el.textContent = m; el.style.color = err ? "var(--err)" : "var(--ok)"; } }
 
 // 서버의 발행 근무표 로드(부서원 포함). 없으면 로컬 복원.
+let LOAD_SEQ = 0; // 월 전환을 빠르게 연타할 때 느린 이전 응답이 나중 선택을 덮지 않게
 async function loadPublished(y, m) {
+  const seq = ++LOAD_SEQ;
   try {
     let list = await api("GET", "/api/schedules");
+    if (seq !== LOAD_SEQ) return;
     if (!list || !list.length) { loadLocal(); return; }
+    // 특정 월 지정 없이 초기 로드하는 경우: 아직 발행되지 않은 초안이 로컬에 있으면
+    // 초안을 먼저 보여준다(생성해 둔 다음 달 표가 로그인/새로고침으로 사라지지 않게).
+    if (!y && !m) {
+      const draft = readLocal();
+      if (draft && draft.year && !draft._published &&
+          !list.some(s => s.year === draft.year && s.month === draft.month)) {
+        SCHED = draft; SCHED._availMonths = list;
+        renderBoard(); return;
+      }
+    }
     let pick = (y && m) ? list.find(s => s.year === y && s.month === m) : list[0];
     if (!pick) pick = list[0];
     const r = await api("GET", `/api/schedule/${pick.year}/${pick.month}`);
+    if (seq !== LOAD_SEQ) return;
     SCHED = r.data; SCHED._published = true; SCHED._availMonths = list;
     renderBoard();
-  } catch (e) { loadLocal(); }
+  } catch (e) { if (seq === LOAD_SEQ) loadLocal(); }
 }
-function loadLocal() { try { const s = localStorage.getItem("duty_sched"); if (s) { SCHED = JSON.parse(s); renderBoard(); } } catch (e) {} }
+function loadLocal() { const s = readLocal(); if (s) { SCHED = s; renderBoard(); } }
 function onViewMonth() {
   const v = document.getElementById("viewMonth").value; if (!v) return;
   const [y, m] = v.split("-").map(Number); loadPublished(y, m);
@@ -1050,12 +1128,15 @@ function normCell(l){ if(l==="M/D"||l==="M/E")return"M"; if(["D","E","N","M","O"
 const CYCLE=["D","E","N","M","O"];
 function cycleCell(el){
   if (!isAdmin()) return;
-  const cur = el.textContent.trim(); let i = CYCLE.indexOf(cur); const next = CYCLE[(i+1)%CYCLE.length];
-  el.textContent = next; el.className = "cell " + cellCls(next);
+  const cur = el.textContent.trim(); let i = CYCLE.indexOf(cur);
+  // 사전배정 코드(HY 등)는 확정 연차라서 실수 클릭으로 지워지면 안 된다 — 확인 후 변경.
+  if (i < 0 && !confirm(`'${cur}'는 사전배정 코드입니다. 일반 근무로 변경할까요?`)) return;
+  const next = CYCLE[(i+1)%CYCLE.length];
   const td = el.closest("td"); const name = td.dataset.n, d = +td.dataset.d;
   const s = SCHED.schedules.find(x=>x.name===name);
   if (s){ s.shifts[d]=next; if(s.labels) s.labels[d]=next; recount(s); }
   store();
+  renderBoard();  // 개인 합계·Σ 일별 합계가 수정 즉시 반영되도록 전체 다시 그림
 }
 function recount(s){ const c={D:0,E:0,N:0,M:0,O:0}; for(const l of (s.labels||s.shifts)){ const n=normCell(l); c[n]=(c[n]||0)+1; } s.counts=c; }
 
@@ -1205,8 +1286,8 @@ async function renderMyWanted() {
   try { list = await api("GET", `/api/wanted/mine?year=${y}&month=${m}`); } catch (e) {}
   if (!list.length) { el.innerHTML = '<span class="muted">이 달의 신청 내역이 없습니다.</span>'; return; }
   el.innerHTML = '<table class="rtable"><thead><tr><th>기간</th><th>종류</th><th>상태</th><th></th></tr></thead><tbody>' +
-    list.map(w => `<tr><td>${w.start_day}일${w.end_day!==w.start_day?`~${w.end_day}일`:""}</td><td>${SH_KO[w.shift]||w.shift}</td>`+
-      `<td><span class="pill">${ST_KO[w.status]||w.status}</span></td>`+
+    list.map(w => `<tr><td>${w.start_day}일${w.end_day!==w.start_day?`~${w.end_day}일`:""}</td><td>${SH_KO[w.shift]||esc(w.shift)}</td>`+
+      `<td><span class="pill">${ST_KO[w.status]||esc(w.status)}</span></td>`+
       `<td class="chk">${w.status==="pending"?`<button class="sm danger" onclick="cancelWanted(${w.id})">취소</button>`:""}</td></tr>`).join("") +
     '</tbody></table>';
 }
@@ -1227,7 +1308,7 @@ async function loadApprovals() {
     if (!list.length) { el.innerHTML = '<span class="muted">신청이 없습니다.</span>'; }
     else el.innerHTML = '<div class="scroll"><table class="rtable"><thead><tr><th>간호사</th><th>기간</th><th>종류</th><th>상태</th><th>처리</th></tr></thead><tbody>' +
       list.map(w => `<tr><td>${esc(w.nurse_name)}</td><td>${w.start_day}${w.end_day!==w.start_day?`~${w.end_day}`:""}일</td>`+
-        `<td>${SH_KO[w.shift]||w.shift}</td><td><span class="pill">${ST_KO[w.status]}</span></td>`+
+        `<td>${SH_KO[w.shift]||esc(w.shift)}</td><td><span class="pill">${ST_KO[w.status]||esc(w.status)}</span></td>`+
         `<td class="chk"><button class="sm" onclick="decide(${w.id},'approved')">승인</button> `+
         `<button class="sm ghost" onclick="decide(${w.id},'rejected')">반려</button></td></tr>`).join("") +
       '</tbody></table></div>';
@@ -1317,7 +1398,7 @@ function exportPNG(){
     g.fillStyle="#1e293b"; g.textAlign="left"; g.fillText(s.name.slice(0,6),4,y); g.textAlign="center";
     for(let d=0;d<nd;d++){ const l=(s.labels&&s.labels[d])||s.shifts[d]; g.fillStyle=COLOR[normCell(l)]||"#be185d"; g.fillText(l,colX(d),y); }
     const c=s.counts||{}; g.fillStyle="#334155"; [c.D,c.E,c.N,c.M,c.O].forEach((v,j)=>g.fillText(v||0,colX(nd+j),y)); });
-  cv.toBlob(b=>dl(b, `duty_${SCHED.year||""}_${SCHED.month||""}.png`));
+  cv.toBlob(b=>{ if (b) dl(b, `duty_${SCHED.year||""}_${SCHED.month||""}.png`); });
 }
 function dl(blob, name){ const u=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1500); }
 
