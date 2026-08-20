@@ -64,9 +64,9 @@ if ! curl -fsS "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; then
   echo "서버가 뜨지 않았습니다. 로그:"; tail -30 "$WORK/server.log"; exit 2
 fi
 
+status=0
 E2E_BASE="http://127.0.0.1:$PORT" E2E_OUT="$OUT" DUTY_BACKUP_CLAIM_CODE="$CODE" \
-  "$NODE_BIN" "$ROOT/tests/e2e/backup_e2e.js"
-status=$?
+  "$NODE_BIN" "$ROOT/tests/e2e/backup_e2e.js" || status=$?
 
 echo "· 스크린샷: $OUT"
 echo "· 서버 로그: $WORK/server.log"

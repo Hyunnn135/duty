@@ -663,6 +663,11 @@ def test_lock_also_applies_to_the_same_source_ip(client, people, code):
 
     같은 IP에서 5회 실패하면 **다른 계정도** 15분간 막힌다(프록시 뒤 공용 NAT에서
     서로를 잠글 수 있음 — 대신 대입 공격이 계정을 바꿔가며 이어가지 못한다).
+
+    품질부는 이 파급을 **가용성 위험**으로 함께 보고했다(Railway처럼 프록시 뒤에서는
+    아무나 5회 오입력해 운영자의 등록을 15분 막을 수 있다). IP 축을 떼기로 결정하면
+    이 테스트가 실패하므로, 그때 "계정 축만 잠근다"로 갱신할 것 — 조용히 사라지지
+    않게 하려고 사실을 고정해 둔다.
     """
     for _ in range(5):
         assert _claim(client, people.owner, _new_claim_code()).status_code == 403
@@ -1646,8 +1651,10 @@ def test_screen_never_exposes_the_claim_code_value():
     """권한 코드 실값이 화면 코드에 박혀 있으면 안 된다(입력받아 서버로 보낼 뿐)."""
     src = _index_source()
     assert "DUTY_BACKUP_CLAIM_CODE" not in src, "화면 코드에 권한 코드 환경변수 이름/값이 있다"
-    assert 'id="claimCode"' in src and 'type="password"' in src, \
-        "권한 코드 입력이 password 입력이 아니다(어깨너머 노출)"
+    m = re.search(r"<input[^>]*id=\"claimCode\"[^>]*>", src)
+    assert m, "권한 코드 입력(#claimCode)이 화면에 없다"
+    assert 'type="password"' in m.group(0), \
+        f"권한 코드 입력이 password 입력이 아니다(어깨너머 노출): {m.group(0)}"
 
 
 # ==================== 마이그레이션 회귀 (레거시 DB 기동) ====================
