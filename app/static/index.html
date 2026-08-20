@@ -86,10 +86,15 @@
   .barrow { display: grid; grid-template-columns: 46px 1fr 30px; align-items: center; gap: 8px; font-size: 12px; }
   .bar { height: 16px; background: var(--n); border-radius: 3px; min-width: 2px; }
   .muted { color: #94a3b8; font-size: 12.5px; }
-  /* 미백업 경고 배너 — 45일 이상이면 상단에 고정되고 닫을 수 없다 */
-  .bkbanner { position: sticky; top: 0; z-index: 60; display: flex; gap: 10px; align-items: center;
+  /* 미백업 경고 배너 — 45일 이상이면 화면 상단에 고정되고 닫을 수 없다.
+     sticky가 아니라 fixed인 이유: 감싸는 #backupBanner가 배너와 같은 높이여서
+     sticky는 움직일 여지가 0이라 그냥 함께 스크롤되어 화면 밖으로 나간다.
+     흐름에서 빠지는 만큼 본문 여백은 JS(syncBackupBannerOffset)가 실측해 보정한다. */
+  .bkbanner { position: fixed; top: 0; left: 0; right: 0; z-index: 60; display: flex; gap: 10px; align-items: center;
     flex-wrap: wrap; padding: 11px 16px; font-size: 13.5px; font-weight: 600;
     background: var(--errbg); color: var(--err); border-bottom: 1px solid #fca5a5; }
+  /* 문구는 한 덩어리로 — 텍스트와 <b>가 각각 flex 항목이 되면 gap 때문에 낱말 사이가 끊긴다 */
+  .bkbanner .bktext { flex: 1 1 auto; min-width: 0; }
   a { color: var(--d); }
   @media (max-width: 640px) {
     .wrap { padding: 12px; }
@@ -567,13 +572,21 @@ function renderBackup() {
 // 45일 이상: 닫을 수 없는 상단 고정 배너 (백업에 성공해야 사라진다)
 function renderBackupBanner() {
   const el = document.getElementById("backupBanner"); if (!el) return;
-  if (!BACKUP || BACKUP.level !== "critical") { el.innerHTML = ""; return; }
+  if (!BACKUP || BACKUP.level !== "critical") { el.innerHTML = ""; syncBackupBannerOffset(); return; }
   const how = BACKUP.days_since == null
     ? "데이터를 한 번도 백업하지 않았습니다"
     : `데이터를 백업한 지 <b>${BACKUP.days_since}일</b> 지났습니다`;
-  el.innerHTML = `<div class="bkbanner">⚠️ ${how}. 지금 백업하지 않으면 사고 시 복구할 수 없습니다.
+  el.innerHTML = `<div class="bkbanner"><span class="bktext">⚠️ ${how}. 지금 백업하지 않으면 사고 시 복구할 수 없습니다.</span>
     <button class="sm" onclick="downloadBackup()" style="margin-left:auto">💾 지금 백업하기</button></div>`;
+  syncBackupBannerOffset();
 }
+// 배너는 fixed라 문서 흐름에서 빠진다 — 헤더가 가려지지 않게 배너 높이만큼 본문을 내린다.
+// 좁은 화면에서는 줄바꿈 때문에 높이가 달라지므로 상수 대신 실측값을 쓴다.
+function syncBackupBannerOffset() {
+  const b = document.querySelector("#backupBanner .bkbanner");
+  document.body.style.paddingTop = b ? b.offsetHeight + "px" : "";
+}
+window.addEventListener("resize", syncBackupBannerOffset);
 // 30일 이상: 로그인 후 첫 진입 시 팝업. "오늘은 나중에"는 KST 당일에만 유효.
 function maybeShowBackupModal() {
   const el = document.getElementById("backupModal"); if (!el) return;
