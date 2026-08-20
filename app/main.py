@@ -4,6 +4,7 @@
   - POST /api/schedule  : admin(파트장)·master만 — 근무표 생성
   - POST /api/validate  : 로그인 사용자 — 수동 수정 대원칙 검사
   - /api/auth/*         : 회원가입·로그인·역할 관리 (auth.py)
+  - /api/admin/backup   : 데이터 백업 내려받기 — 허가 계정 1인만 (backup.py)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .alternatives import AlternativesRequest, AlternativesResponse, generate
 from .auth import UserInfo, get_current_user, require_roles, router as auth_router
+from .backup import router as backup_router
 from .export_xlsx import ExportRequest, build_xlsx
 from .models import CandidatesResponse, ScheduleRequest, ScheduleResponse
 from .rules_check import ValidateRequest, ValidateResponse, check
@@ -32,6 +34,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 app.include_router(auth_router)
 app.include_router(storage_router)
+app.include_router(backup_router)
 
 
 @app.get("/health")

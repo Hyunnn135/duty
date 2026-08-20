@@ -20,6 +20,7 @@ import os
 import secrets
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
@@ -80,6 +81,24 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+def _add_user_column(conn: sqlite3.Connection, name: str, decl: str) -> None:
+    """users에 컬럼을 1회 추가한다 — 동시 첫 요청의 `duplicate column name` 500을 삼킨다.
+
+    여러 워커가 빈 DB에 **동시에 처음** 붙으면 각자 자기 _INITED_DBS로 마이그레이션을
+    돌리는데, PRAGMA 확인과 ALTER 사이에서 경합해 한쪽이 이미 붙인 컬럼을 다른 쪽이
+    또 붙이려다 OperationalError('duplicate column name')로 500을 낸다. 무손실·자가
+    치유지만 배포 직후·DB 초기화 직후의 그 창을 없앤다(D-1). ADD COLUMN이 아닌 다른
+    OperationalError는 그대로 전파한다.
+    """
+    if name in {r["name"] for r in conn.execute("PRAGMA table_info(users)")}:
+        return
+    try:
+        conn.execute(f"ALTER TABLE users ADD COLUMN {decl}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 def _init_db(conn: sqlite3.Connection) -> None:
     """스키마 생성·마이그레이션 (DB 경로별 1회, _conn에서 호출)."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -93,7 +112,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
             ward TEXT DEFAULT '',
             pw_hash TEXT NOT NULL,
             salt TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            backup_owner INTEGER NOT NULL DEFAULT 0
         )"""
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
@@ -131,6 +151,24 @@ def _init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             conn.rollback()
             raise
+    # 백업 권한 플래그(D-19) — 레거시 DB에 1회 추가한다. 기동만으로 올라와야 하므로
+    # 재구축이 아니라 ADD COLUMN으로 붙인다(기본값 0 = 아무도 권한이 없는 상태).
+    # 값이 계정에 붙어 있으므로 "uid를 먼저 차지하면 권한이 따라온다"는 선점 경로가
+    # 없어진다. 권한은 운영자만 아는 코드를 제출한 계정에만 켜진다(backup.claim).
+    # ADD COLUMN은 idempotent하지 않아 동시 첫 요청에서 duplicate column 500을 냈다
+    # (D-1) — _add_user_column이 그 경합을 삼킨다.
+    _add_user_column(conn, "backup_owner",
+                     "backup_owner INTEGER NOT NULL DEFAULT 0")
+    # 권한 코드 실패 잠금 상태 — 계정 행에 붙인다(backup.py가 읽고 쓴다).
+    # 프로세스 메모리에 두면 scale-to-zero로 인스턴스가 내려갈 때 잠금이 통째로
+    # 풀리고, 출처 IP를 키에 넣으면 프록시 뒤(Railway)에서는 전원이 같은 IP로 보여
+    # 아무나 5회 틀려 정상 운영자를 막을 수 있다. IP를 DB에 남기면 백업 ZIP으로
+    # 실려 나가기까지 한다(개인정보 — 교훈 L-1). 그래서 **계정 축만, DB에** 남긴다.
+    _add_user_column(conn, "claim_fails",
+                     "claim_fails INTEGER NOT NULL DEFAULT 0")
+    # 이 시각(UTC ISO)까지 잠금. 실패할 때마다 '지금 + 잠금시간'으로 갱신되므로
+    # **마지막 실패 시각의 표지**로도 쓴다(전역 실패 총량의 창 판정 — backup.py).
+    _add_user_column(conn, "claim_locked_until", "claim_locked_until TEXT")
     # 대문자 정규화 이전 커밋으로 저장됐을 수 있는 소문자 사번을 1회 정규화(방어적)
     # — 조회·중복검사·명단 매칭이 모두 대문자 기준이므로 저장 데이터도 맞춘다.
     try:
@@ -216,6 +254,9 @@ class TokenResponse(BaseModel):
     name: str
     ward: str
     empno: str = ""
+    # uid는 더 이상 내려주지 않는다. 백업 권한이 환경변수 uid 목록에서 계정 플래그로
+    # 옮겨가면서(D-19) 화면이 uid를 보여줄 이유가 사라졌다 — 쓰지 않는 내부 식별자를
+    # 굳이 응답에 실어 두지 않는다.
 
 
 class UserInfo(BaseModel):
@@ -224,7 +265,8 @@ class UserInfo(BaseModel):
     role: str
     ward: str
     empno: str = ""
-    uid: int = 0  # users.id — 사번/이메일과 무관한 안정적 내부 식별자
+    uid: int = 0  # users.id — 사번/이메일과 무관한 안정적 내부 식별자(서버 내부용)
+    backup_owner: bool = False  # users.backup_owner — 백업 반출 권한(D-19)
 
     def key(self) -> str:
         """데이터 연결용 계정 식별자 — 사번이 있으면 사번, 없으면(구계정) 이메일."""
@@ -274,9 +316,138 @@ def _make_token(user: sqlite3.Row) -> str:
     return jwt.encode(payload, _secret(), algorithm=_ALGO)
 
 
+def _row_get(row: sqlite3.Row, key: str, default=None):
+    """Row에서 컬럼을 안전하게 꺼낸다 — 마이그레이션 전 스키마에서도 죽지 않게."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _user_info(u: sqlite3.Row) -> UserInfo:
     return UserInfo(email=u["email"] or "", name=u["name"], role=u["role"],
-                    ward=u["ward"], empno=u["empno"] or "", uid=u["id"])
+                    ward=u["ward"], empno=u["empno"] or "", uid=u["id"],
+                    backup_owner=bool(_row_get(u, "backup_owner", 0)))
+
+
+# ---- 권한 코드 제출: 잠금·전역상한·grant/revoke를 한 트랜잭션으로 직렬화 ----
+#
+# 시각은 전부 `_utc_now_iso()`가 만든 같은 형식(UTC ISO, 고정 오프셋)이라 문자열
+# 비교가 곧 시각 비교다. 파싱 없이 SQL에서 바로 창을 자를 수 있다.
+#
+# **왜 한 함수·한 트랜잭션인가(①결함1):** 예전에는 잠금 검사(_claim_guard)·코드
+# 대조·실패 기록(record_claim_fail: read-modify-write)이 서로 다른 연결/트랜잭션으로
+# 흩어져 있었다. 그래서 동시 요청 여러 개가 서로의 실패가 기록되기 **전에** 가드를
+# 통과했다(검사-후-행동 경합). 실측: 50 동시 요청 중 다수가 상한 5를 넘겨 통과했고,
+# 정답을 버스트에 섞으면 전역 상한 30도 한 버스트로 뚫렸다. 아래는 `BEGIN IMMEDIATE`로
+# **쓰기 락을 먼저** 잡아 claim/revoke를 순차화하고, 락을 잡은 뒤 카운터를 **재조회**해
+# 잠금을 다시 판정(fail-closed)한 다음에만 코드를 대조한다. 실패 누적은 한 문장
+# `claim_fails+1`(원자적 증가)로, 성공 시 grant/revoke까지 같은 트랜잭션 안에서 끝낸다.
+# SQLite에서 BEGIN IMMEDIATE는 여러 워커/스레드의 쓰기를 직렬화하고, busy_timeout(_conn의
+# 5000ms)이 락 경합 시 즉시 에러 대신 대기하게 한다.
+
+# run_claim_transaction 결과 코드
+CLAIM_LOCKED = "locked"          # 이 계정이 잠김(연속 실패 상한)
+CLAIM_LOCKED_GLOBAL = "locked_global"  # 전역 실패 총량 상한
+CLAIM_BAD = "bad_code"           # 코드 불일치(실패 +1 기록됨)
+CLAIM_OK = "ok"                  # 코드 일치 → grant/revoke 수행됨
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def run_claim_transaction(
+    uid: int,
+    *,
+    action: str,
+    max_fails: int,
+    global_max_fails: int,
+    lock_sec: int,
+    code_ok,
+) -> tuple[str, object]:
+    """권한 코드 제출을 BEGIN IMMEDIATE 한 트랜잭션으로 직렬화한다(claim·revoke 공용).
+
+    순서: (1) 쓰기 락 획득 → (2) 이 계정·전역의 실패 카운터를 **재조회**해 잠금
+    재판정(fail-closed) → (3) 통과 시에만 `code_ok()`로 코드 대조 → (4) 틀리면
+    `claim_fails+1`(원자적, 창이 지났으면 1로 리셋)·잠금 창 갱신, 맞으면 카운터를
+    지우고 action('grant'|'revoke')을 **같은 트랜잭션에서** 수행. 전역 상한도 이
+    트랜잭션 안에서 판정하므로 동시 버스트가 lost update로 상한을 넘지 못한다.
+
+    code_ok(): 코드 일치 여부(hmac.compare_digest). 락 획득·잠금 통과 뒤에만 부른다.
+    반환: (결과코드, data)
+      - 결과코드: CLAIM_LOCKED | CLAIM_LOCKED_GLOBAL | CLAIM_BAD | CLAIM_OK
+      - data(CLAIM_OK일 때만 의미 있음):
+          action='grant'  → 'granted'(새로 켜짐) | 'already'(이미 켜져 있었음) |
+                             'missing'(계정 없음)
+          action='revoke' → 실제로 꺼진 [(uid, 병동), ...] 목록
+        그 외 결과코드에서는 None.
+    """
+    conn = _conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")  # 쓰기 락을 먼저 잡아 동시 claim/revoke를 순차화
+        now = _utc_now_iso()
+        # 락을 잡은 뒤 카운터를 다시 읽어 잠금을 재판정한다(fail-closed).
+        row = conn.execute(
+            "SELECT claim_fails, claim_locked_until FROM users WHERE id=?",
+            (uid,)).fetchone()
+        fails = 0
+        if row is not None:
+            until = _row_get(row, "claim_locked_until")
+            if until and until > now:  # 창이 살아 있을 때만 실패가 유효(지났으면 0)
+                fails = int(_row_get(row, "claim_fails", 0) or 0)
+        if fails >= max_fails:
+            conn.rollback()
+            return CLAIM_LOCKED, None
+        grow = conn.execute(
+            "SELECT COALESCE(SUM(claim_fails), 0) AS n FROM users "
+            "WHERE claim_locked_until IS NOT NULL AND claim_locked_until > ?",
+            (now,)).fetchone()
+        if int(grow["n"] if grow else 0) >= global_max_fails:
+            conn.rollback()
+            return CLAIM_LOCKED_GLOBAL, None
+        if not code_ok():
+            until2 = (datetime.now(timezone.utc)
+                      + timedelta(seconds=lock_sec)).isoformat()
+            # 원자적 증가 — 창이 지났으면 1로 리셋(claim_fail_state의 창 판정과 동일).
+            conn.execute(
+                "UPDATE users SET "
+                "claim_fails = CASE WHEN claim_locked_until IS NOT NULL "
+                "  AND claim_locked_until > ? THEN claim_fails + 1 ELSE 1 END, "
+                "claim_locked_until = ? WHERE id=?",
+                (now, until2, uid))
+            conn.commit()
+            return CLAIM_BAD, None
+        # 코드 일치 — 실패 누적을 지우고 성공 동작을 같은 트랜잭션에서 수행한다.
+        conn.execute(
+            "UPDATE users SET claim_fails=0, claim_locked_until=NULL WHERE id=?",
+            (uid,))
+        if action == "revoke":
+            rows = conn.execute(
+                "SELECT id, ward FROM users WHERE backup_owner=1 ORDER BY id"
+            ).fetchall()
+            conn.execute("UPDATE users SET backup_owner=0 WHERE backup_owner=1")
+            conn.commit()
+            return CLAIM_OK, [(int(r["id"]), r["ward"] or "") for r in rows]
+        # action == "grant" — 이미 켜져 있었는지 확인해 감사 중복 적재를 막는다(FIX-5).
+        me = conn.execute(
+            "SELECT backup_owner FROM users WHERE id=?", (uid,)).fetchone()
+        if me is None:
+            conn.rollback()
+            return CLAIM_OK, "missing"
+        already = bool(_row_get(me, "backup_owner", 0))
+        if not already:
+            conn.execute("UPDATE users SET backup_owner=1 WHERE id=?", (uid,))
+        conn.commit()
+        return CLAIM_OK, ("already" if already else "granted")
+    except BaseException:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:
