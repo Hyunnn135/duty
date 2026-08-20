@@ -93,7 +93,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
             ward TEXT DEFAULT '',
             pw_hash TEXT NOT NULL,
             salt TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            backup_owner INTEGER NOT NULL DEFAULT 0
         )"""
     )
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
@@ -131,6 +132,13 @@ def _init_db(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             conn.rollback()
             raise
+    # 백업 권한 플래그(D-19) — 레거시 DB에 1회 추가한다. 기동만으로 올라와야 하므로
+    # 재구축이 아니라 ADD COLUMN으로 붙인다(기본값 0 = 아무도 권한이 없는 상태).
+    # 값이 계정에 붙어 있으므로 "uid를 먼저 차지하면 권한이 따라온다"는 선점 경로가
+    # 없어진다. 권한은 운영자만 아는 코드를 제출한 계정에만 켜진다(backup.claim).
+    if "backup_owner" not in {r["name"] for r in conn.execute("PRAGMA table_info(users)")}:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN backup_owner INTEGER NOT NULL DEFAULT 0")
     # 대문자 정규화 이전 커밋으로 저장됐을 수 있는 소문자 사번을 1회 정규화(방어적)
     # — 조회·중복검사·명단 매칭이 모두 대문자 기준이므로 저장 데이터도 맞춘다.
     try:
@@ -216,7 +224,9 @@ class TokenResponse(BaseModel):
     name: str
     ward: str
     empno: str = ""
-    uid: int = 0  # users.id — 화면이 로그인 직후에도 uid를 표시할 수 있게 함께 내려준다
+    # uid는 더 이상 내려주지 않는다. 백업 권한이 환경변수 uid 목록에서 계정 플래그로
+    # 옮겨가면서(D-19) 화면이 uid를 보여줄 이유가 사라졌다 — 쓰지 않는 내부 식별자를
+    # 굳이 응답에 실어 두지 않는다.
 
 
 class UserInfo(BaseModel):
@@ -225,7 +235,8 @@ class UserInfo(BaseModel):
     role: str
     ward: str
     empno: str = ""
-    uid: int = 0  # users.id — 사번/이메일과 무관한 안정적 내부 식별자
+    uid: int = 0  # users.id — 사번/이메일과 무관한 안정적 내부 식별자(서버 내부용)
+    backup_owner: bool = False  # users.backup_owner — 백업 반출 권한(D-19)
 
     def key(self) -> str:
         """데이터 연결용 계정 식별자 — 사번이 있으면 사번, 없으면(구계정) 이메일."""
@@ -275,9 +286,34 @@ def _make_token(user: sqlite3.Row) -> str:
     return jwt.encode(payload, _secret(), algorithm=_ALGO)
 
 
+def _row_get(row: sqlite3.Row, key: str, default=None):
+    """Row에서 컬럼을 안전하게 꺼낸다 — 마이그레이션 전 스키마에서도 죽지 않게."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _user_info(u: sqlite3.Row) -> UserInfo:
     return UserInfo(email=u["email"] or "", name=u["name"], role=u["role"],
-                    ward=u["ward"], empno=u["empno"] or "", uid=u["id"])
+                    ward=u["ward"], empno=u["empno"] or "", uid=u["id"],
+                    backup_owner=bool(_row_get(u, "backup_owner", 0)))
+
+
+def grant_backup_owner(uid: int) -> bool:
+    """백업 반출 권한 플래그를 켠다 (backup.py의 권한 코드 등록에서만 호출).
+
+    권한을 **계정 행**에 붙이는 것이 D-19의 핵심이다. 환경변수에 uid를 적던 예전
+    방식은 (a) 그 번호를 아직 아무도 안 쓰고 있으면 먼저 가입한 사람이 가져가고,
+    (b) DB가 초기화되면 새 첫 가입자가 uid 1을 물려받아 권한까지 상속했다.
+    """
+    conn = _conn()
+    try:
+        cur = conn.execute("UPDATE users SET backup_owner=1 WHERE id=?", (uid,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:
@@ -401,7 +437,7 @@ def register(body: RegisterRequest) -> TokenResponse:
             "SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
         return TokenResponse(token=_make_token(user), role=user["role"],
                              name=user["name"], ward=user["ward"],
-                             empno=user["empno"] or "", uid=user["id"])
+                             empno=user["empno"] or "")
     except HTTPException:
         try:
             conn.rollback()
@@ -458,7 +494,7 @@ def login(body: LoginRequest) -> TokenResponse:
             raise HTTPException(401, "사번(또는 이메일)이나 비밀번호가 올바르지 않습니다.")
         return TokenResponse(token=_make_token(user), role=user["role"],
                              name=user["name"], ward=user["ward"],
-                             empno=user["empno"] or "", uid=user["id"])
+                             empno=user["empno"] or "")
     finally:
         conn.close()
 

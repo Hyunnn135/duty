@@ -216,8 +216,8 @@
       <div class="hint">부서원에게 이 코드를 알려주면, 회원가입 화면의 "초대 코드"란에 입력해 가입합니다. 코드가 유출됐다면 재발급하세요(이전 코드는 즉시 무효).</div>
     </div>
 
-    <!-- 내 계정 번호(uid) 카드 자리 — 운영자(마스터)에게만 JS가 채운다 -->
-    <div id="uidBox"></div>
+    <!-- 백업 권한 등록 카드 자리 — 아직 권한이 없는 마스터에게만 JS가 채운다 -->
+    <div id="backupClaimBox"></div>
 
     <!-- 데이터 백업 카드 자리 — 허가 계정에만 JS가 채운다(그 외 계정은 DOM에 없음) -->
     <div id="backupBox"></div>
@@ -434,8 +434,7 @@ async function submitAuth() {
       return;
     }
     localStorage.setItem("duty_token", data.token);
-    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "",
-           uid: data.uid || 0 };
+    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "" };
     onAuthed();
   } catch (e) { authError("서버에 연결할 수 없습니다"); }
 }
@@ -491,7 +490,6 @@ async function onAuthed() {
   userName.textContent = ME.name;
   userRole.textContent = ROLE_KO[ME.role] || ME.role;
   renderEmpnoHint();
-  renderUidCard();
   buildTabs();
   // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
   try {
@@ -529,38 +527,14 @@ async function rotateInvite() {
   } catch (e) { inviteMsg.textContent = "재발급 실패: " + e.message; }
 }
 
-// 내 계정 번호(uid) — 배포 담당자가 백업 허가 계정을 지정할 때 쓰는 값이다.
-// 사번·이메일이 아니라 uid로 지정하는 이유: 사번 문자열로 지정하면 그 사번이 아직
-// 아무 계정에도 없는 동안 다른 사람이 먼저 등록해 가로챌 수 있다(선점). uid는 가입할
-// 때 서버가 정해 주고 바뀌지 않아 가로챌 수 없다. 그래서 **가입을 먼저 하고** 여기서
-// 확인한 번호를 배포 담당자에게 알려주는 순서가 된다(DEPLOY §7.6).
-function renderUidCard() {
-  const box = document.getElementById("uidBox"); if (!box) return;
-  if (!isMaster() || !ME || !ME.uid) { box.innerHTML = ""; return; }
-  box.innerHTML = `<div class="card">
-    <h2>🆔 내 계정 번호 <span class="sub">백업 권한을 지정할 때 배포 담당자에게 알려주는 값</span></h2>
-    <div class="row">
-      <code id="myUid" style="font-size:18px;font-weight:800;letter-spacing:2px;background:#f1f5f9;padding:6px 14px;border-radius:8px">${ME.uid}</code>
-      <button class="sm ghost" onclick="copyUid()">📋 복사</button>
-      <span id="uidMsg" class="muted"></span>
-    </div>
-    <div class="hint">이 번호는 <b>가입할 때 자동으로 정해지고 바뀌지 않습니다</b>(비밀번호가 아니라 순번이라
-      알려져도 그것만으로는 아무 권한이 생기지 않습니다). 데이터 백업 기능을 쓰려면 이 번호를 배포 담당자에게
-      알려 주세요. 담당자가 서버 설정(DEPLOY 문서 §7.6)에 넣으면 아래에 백업 카드가 나타납니다.</div>
-  </div>`;
-}
-function copyUid() {
-  const el = document.getElementById("uidMsg");
-  navigator.clipboard.writeText(String(ME.uid)).then(
-    () => { el.textContent = "복사됨 ✓"; setTimeout(() => el.textContent = "", 1500); },
-    () => { el.textContent = String(ME.uid); });
-}
-
 /* ====================== 데이터 백업 (허가 계정 전용) ====================== */
 // 노출 판정에 data-admin/hideAdminEls를 재사용하지 않는다 — 그건 관리자+운영자
-// 공용이고, 백업은 환경변수로 허가된 단일 계정만 쓸 수 있다. **서버 403이 본
-// 방어선**이고 여기서 숨기는 것은 편의일 뿐이다(허가 여부도 서버 응답으로 판정).
-let BACKUP = null;                          // {last_backup_at, days_since, level}
+// 공용이고, 백업은 권한 코드를 등록한 계정만 쓸 수 있다. **서버 403이 본 방어선**
+// 이고 여기서 숨기는 것은 편의일 뿐이다(허가 여부도 서버 응답으로 판정).
+let BACKUP = null;                          // {last_backup_at, days_since, level, denied_last_30d}
+let BACKUP_STATE = "loading";               // loading | ok | noperm | error
+let BACKUP_BUSY = false;                    // 중복 클릭 방지(배너·모달 버튼 포함)
+let PENDING_BACKUP = null;                  // {id, bytes, name} — 저장 확인 대기 중인 백업
 const BACKUP_SNOOZE_KEY = "duty_backup_snooze";
 // KST 달력 날짜(YYYY-MM-DD) — "오늘은 나중에"는 KST 당일 자정까지만 유효(교훈 L-4)
 function kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
@@ -568,20 +542,87 @@ function fmtKst(iso) {
   try { return new Date(new Date(iso).getTime() + 9 * 3600 * 1000)
     .toISOString().slice(0, 16).replace("T", " ") + " (KST)"; } catch (e) { return iso; }
 }
-async function initBackup() {
-  try { BACKUP = await api("GET", "/api/admin/backup/status"); }
-  catch (e) { BACKUP = null; return; }  // 403 = 허가 계정 아님 → 아무것도 그리지 않는다
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// 상태 조회. **403만 무음 처리**한다. 이 앱은 scale-to-zero라 콜드 스타트 첫 요청이
+// 실패하거나 8~10초 걸리는 것이 정상 동작이고, 그 한 번의 실패로 배너·팝업·백업
+// 버튼이 전부 사라지면 120일 미백업이어도 화면이 깨끗해진다 — 하고 싶어도 못 한다.
+// 침묵하는 경고는 없는 경고다. 그래서 재시도하고, 그래도 안 되면 그 사실을 표시한다.
+async function initBackup(attempt) {
+  attempt = attempt || 1;
+  try {
+    BACKUP = await api("GET", "/api/admin/backup/status");
+    BACKUP_STATE = "ok";
+  } catch (e) {
+    if (e.status === 403) { BACKUP = null; BACKUP_STATE = "noperm"; renderBackup(); return; }
+    if (attempt < 3) { await wait(1000 * attempt); return initBackup(attempt + 1); }
+    BACKUP = null; BACKUP_STATE = "error"; renderBackup(); return;
+  }
   renderBackup();
 }
+function retryBackupStatus() { BACKUP_STATE = "loading"; renderBackup(); initBackup(); }
+
 function backupAgoText() {
   if (!BACKUP || BACKUP.days_since == null) return "아직 백업한 적이 없습니다";
   const d = BACKUP.days_since;
   return (d === 0 ? "오늘" : d + "일 전") + " · " + fmtKst(BACKUP.last_backup_at);
 }
+
+// 권한이 없는 마스터에게만 보이는 등록 카드. staff·admin에게는 DOM에 없다.
+function renderBackupClaim() {
+  const box = document.getElementById("backupClaimBox"); if (!box) return;
+  if (BACKUP_STATE !== "noperm" || !isMaster()) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="card">
+    <h2>🔐 백업 권한 등록 <span class="sub">운영 담당자에게 받은 코드를 한 번만 입력합니다</span></h2>
+    <div class="row">
+      <input id="claimCode" type="password" placeholder="권한 코드" autocomplete="off"
+             style="min-width:220px" onkeydown="if(event.key==='Enter')submitBackupClaim()">
+      <button class="sm" id="claimBtn" onclick="submitBackupClaim()">등록</button>
+    </div>
+    <div class="hint">등록하면 이 <b>계정</b>에 백업 권한이 붙고 아래에 💾 데이터 백업 카드가 나타납니다.
+      코드는 저장되지 않으며 한 번만 쓰면 됩니다. 코드를 모르면 운영 담당자에게 문의하세요.
+      <b>데이터베이스가 초기화되면 권한도 함께 사라지므로 그때는 다시 등록해야 합니다</b>(정상입니다).</div>
+    <div id="claimMsg" class="hint" style="min-height:14px"></div></div>`;
+}
+async function submitBackupClaim() {
+  const input = document.getElementById("claimCode"), btn = document.getElementById("claimBtn");
+  const msg = document.getElementById("claimMsg");
+  const code = input ? input.value.trim() : "";
+  if (!code) { if (msg) { msg.textContent = "권한 코드를 입력하세요."; msg.style.color = "var(--err)"; } return; }
+  if (btn) btn.disabled = true;
+  if (msg) { msg.textContent = "확인 중입니다…"; msg.style.color = ""; }
+  try {
+    BACKUP = await api("POST", "/api/admin/backup/claim", { code });
+    BACKUP_STATE = "ok";
+    if (input) input.value = "";
+    renderBackup();
+  } catch (e) {
+    if (msg) { msg.textContent = "등록 실패: " + e.message; msg.style.color = "var(--err)"; }
+  } finally {
+    const b = document.getElementById("claimBtn"); if (b) b.disabled = false;
+  }
+}
+
 function renderBackup() {
-  if (!BACKUP) return;
+  renderBackupClaim();
   const box = document.getElementById("backupBox");
-  if (box && !document.getElementById("backupBtn")) {
+  if (!box) return;
+  if (BACKUP_STATE === "loading" || BACKUP_STATE === "noperm") {
+    box.innerHTML = "";  // 권한 없음 = 아무것도 그리지 않는다(허가 여부는 서버 판정)
+    renderBackupBanner(); maybeShowBackupModal(); return;
+  }
+  if (BACKUP_STATE === "error") {
+    // 상태를 모르는 것과 "백업이 최신인 것"은 전혀 다르다. 모른다고 말한다.
+    box.innerHTML = `<div class="card">
+      <h2>💾 데이터 백업</h2>
+      <div class="status warn">백업 상태를 확인하지 못했습니다. 백업이 필요한 상태인지 알 수 없습니다.</div>
+      <div class="row" style="margin-top:8px">
+        <button class="sm" onclick="retryBackupStatus()">🔄 다시 시도</button></div>
+      <div class="hint">서버가 잠들어 있다가 깨어나는 중일 수 있습니다(첫 접속은 8~10초 걸립니다).
+        몇 번 눌러도 같으면 운영 담당자에게 알려 주세요.</div></div>`;
+    renderBackupBanner(); maybeShowBackupModal(); return;
+  }
+  if (!document.getElementById("backupBtn")) {
     box.innerHTML = `<div class="card">
       <h2>💾 데이터 백업 <span class="sub">허가된 계정만 사용할 수 있습니다</span></h2>
       <div class="row">
@@ -594,6 +635,7 @@ function renderBackup() {
         <b>OneDrive·iCloud 동기화가 켜진 폴더(바탕화면·문서·다운로드)에 두지 마세요</b> — 그대로 인터넷에
         올라갑니다. 잃어버렸다면 즉시 초대 코드를 재발급하고, 복구에 쓰고 나면 파일을 삭제하세요.
         한 달에 한 번 내려받기를 권장합니다.</div>
+      <div id="backupDenied" class="hint" style="min-height:0"></div>
       <div id="backupMsg" class="hint" style="min-height:14px"></div></div>`;
   }
   const info = document.getElementById("backupInfo");
@@ -601,19 +643,31 @@ function renderBackup() {
     info.textContent = "마지막 백업: " + backupAgoText();
     info.style.color = BACKUP.level === "ok" ? "" : "var(--err)";
   }
+  // 거부 시도 노출 — 기록만 쌓고 볼 방법이 없으면 탐지 수단이 아니다.
+  const dn = document.getElementById("backupDenied");
+  if (dn) {
+    const n = (BACKUP && BACKUP.denied_last_30d) || 0;
+    dn.innerHTML = n > 0
+      ? `<b style="color:var(--err)">⚠️ 최근 30일 동안 권한 없는 계정의 백업 시도가 ${n}건 있었습니다.</b>
+         (같은 계정의 같은 날 시도는 1건으로 셉니다.) 짐작 가는 바가 없으면 운영 담당자에게 알려 주세요.`
+      : "";
+  }
   renderBackupBanner();
   maybeShowBackupModal();
 }
 // 45일 이상: 닫을 수 없는 상단 고정 배너 (백업에 성공해야 사라진다)
 function renderBackupBanner() {
   const el = document.getElementById("backupBanner"); if (!el) return;
-  if (!BACKUP || BACKUP.level !== "critical") { el.innerHTML = ""; syncBackupBannerOffset(); return; }
+  if (BACKUP_STATE !== "ok" || !BACKUP || BACKUP.level !== "critical") {
+    el.innerHTML = ""; syncBackupBannerOffset(); return;
+  }
   const how = BACKUP.days_since == null
     ? "데이터를 한 번도 백업하지 않았습니다"
     : `데이터를 백업한 지 <b>${BACKUP.days_since}일</b> 지났습니다`;
   el.innerHTML = `<div class="bkbanner"><span class="bktext">⚠️ ${how}. 지금 백업하지 않으면 사고 시 복구할 수 없습니다.</span>
-    <button class="sm" onclick="downloadBackup()" style="margin-left:auto">💾 지금 백업하기</button></div>`;
+    <button class="sm bk-action" onclick="downloadBackup()" style="margin-left:auto">💾 지금 백업하기</button></div>`;
   syncBackupBannerOffset();
+  applyBackupBusy();
 }
 // 배너는 fixed라 문서 흐름에서 빠진다 — 헤더가 가려지지 않게 배너 높이만큼 본문을 내린다.
 // 좁은 화면에서는 줄바꿈 때문에 높이가 달라지므로 상수 대신 실측값을 쓴다.
@@ -625,7 +679,8 @@ window.addEventListener("resize", syncBackupBannerOffset);
 // 30일 이상: 로그인 후 첫 진입 시 팝업. "오늘은 나중에"는 KST 당일에만 유효.
 function maybeShowBackupModal() {
   const el = document.getElementById("backupModal"); if (!el) return;
-  if (!BACKUP || BACKUP.level === "ok") { el.innerHTML = ""; return; }
+  if (PENDING_BACKUP) return;  // 저장 확인 모달이 떠 있으면 덮어쓰지 않는다
+  if (BACKUP_STATE !== "ok" || !BACKUP || BACKUP.level === "ok") { el.innerHTML = ""; return; }
   if (localStorage.getItem(BACKUP_SNOOZE_KEY) === kstToday()) return;
   const how = BACKUP.days_since == null
     ? "데이터를 아직 한 번도 백업하지 않았습니다."
@@ -637,45 +692,121 @@ function maybeShowBackupModal() {
       <div class="status warn">${how} 서버에 문제가 생기면 명단·근무표를 되돌릴 수 없습니다.</div>
       <div class="hint">버튼을 누르면 ZIP 파일 하나가 내려받아집니다(약 몇 초). 개인정보가 들어 있으니
         본인 기기에만 보관하세요.</div>
+      <div id="backupModalMsg" class="hint" style="min-height:14px"></div>
       <div class="row" style="margin-top:12px">
-        <button class="sm" onclick="downloadBackup()">💾 지금 백업하기</button>
-        <button class="sm ghost" onclick="snoozeBackup()">오늘은 나중에</button></div></div></div>`;
+        <button class="sm bk-action" onclick="downloadBackup()">💾 지금 백업하기</button>
+        <button class="sm ghost bk-action" onclick="snoozeBackup()">오늘은 나중에</button></div></div></div>`;
+  applyBackupBusy();
 }
 function snoozeBackup() {
   localStorage.setItem(BACKUP_SNOOZE_KEY, kstToday());  // 다음 날 다시 노출된다
   document.getElementById("backupModal").innerHTML = "";
 }
+
+// 중복 클릭 방지 — 압박받은 사용자가 실제로 누르는 것은 배너·모달 버튼이다.
+// 배너 버튼 3연타로 전체 DB 스냅샷 3개(개인정보 ZIP 3개)가 동시에 만들어졌다.
+function applyBackupBusy() {
+  const b = document.getElementById("backupBtn"); if (b) b.disabled = BACKUP_BUSY;
+  document.querySelectorAll(".bk-action").forEach(el => { el.disabled = BACKUP_BUSY; });
+}
+function setBackupBusy(on) { BACKUP_BUSY = on; applyBackupBusy(); }
+// 진행/결과 문구는 설정 카드와 **모달 안쪽 양쪽에** 쓴다. 설정 카드의 문구는 뷰포트
+// 아래 386px 지점이라 팝업을 보고 있는 사용자에게는 보이지 않는다 — 멈춘 줄 알고 다시 누른다.
+function showBackupMsg(text, kind) {
+  const color = kind === "err" ? "var(--err)" : kind === "ok" ? "var(--ok)" : "";
+  ["backupMsg", "backupModalMsg", "backupVerifyMsg"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = text; el.style.color = color; }
+  });
+}
+
 async function downloadBackup() {
-  const btn = document.getElementById("backupBtn"), msg = document.getElementById("backupMsg");
-  if (btn) btn.disabled = true;
-  if (msg) { msg.textContent = "백업 파일을 만드는 중입니다…"; msg.style.color = ""; }
+  if (BACKUP_BUSY) return;
+  setBackupBusy(true);
+  showBackupMsg("백업 파일을 만드는 중입니다…", "");
   try {
     const res = await fetch("/api/admin/backup", { headers: authHeaders() });
     if (res.status === 401) { localStorage.removeItem("duty_token"); showAuth(true); return; }
     if (!res.ok) throw new Error("서버가 거부했습니다 (" + res.status + ")");
     const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
     const backupId = +(res.headers.get("X-Backup-Id") || 0);
+    const shrunk = res.headers.get("X-Backup-Shrink") === "1";
+    const prevBytes = +(res.headers.get("X-Backup-Prev-Bytes") || 0);
     // blob()은 본문을 **끝까지** 받아야 성공한다 — 중간에 끊기면 여기서 예외가 나고
-    // 아래 확정 호출에 도달하지 않으므로, 서버 이력은 pending으로 남아 경고가 유지된다.
+    // 아래 확정 단계에 도달하지 않으므로, 서버 이력은 pending으로 남아 경고가 유지된다.
     const blob = await res.blob();
-    dl(blob, m ? m[1] : "duty_backup.zip");
-    // 파일을 실제로 다 받았다는 확정 신호. 이 호출이 서버의 성공 이력('ok')을 만든다.
-    try {
-      BACKUP = await api("POST", "/api/admin/backup/confirm", { id: backupId, bytes: blob.size });
-      if (msg) { msg.textContent = "백업 파일을 내려받았습니다 ✓ 안전한 곳에 보관하세요."; msg.style.color = "var(--ok)"; }
-      localStorage.removeItem(BACKUP_SNOOZE_KEY);
-      document.getElementById("backupModal").innerHTML = "";  // 성공 → 팝업 소멸
-    } catch (e) {
-      // 파일은 받았지만 확정이 서버에 닿지 않았다 → 성공으로 기록하지 않는다(경고 유지).
-      // 없는 백업을 있다고 믿는 것보다 한 번 더 받는 편이 안전하다.
-      if (msg) { msg.textContent = "파일은 내려받았지만 서버에 기록하지 못했습니다. 잠시 후 다시 내려받아 주세요."; msg.style.color = "var(--err)"; }
-    }
-    renderBackup();
+    const name = m ? m[1] : "duty_backup.zip";
+    dl(blob, name);
+    // dl()은 <a download>를 click하는 **발사 후 망각** 함수다. blob을 받은 것은
+    // "본문이 JS 힙까지 왔다"는 뜻이지 "파일이 저장됐다"는 뜻이 아니다(브라우저가
+    // 저장을 거부하거나 사용자가 취소해도 여기까지는 똑같이 온다). 그래서 확정은
+    // **사람이 눈으로 확인한 뒤**에 보낸다 — 사람 확인이 유일한 진짜 증거다.
+    PENDING_BACKUP = { id: backupId, bytes: blob.size, name: name, shrunk: shrunk, prevBytes: prevBytes };
+    showBackupVerifyModal();
   } catch (e) {
-    if (msg) { msg.textContent = "백업 실패: " + e.message; msg.style.color = "var(--err)"; }
-    else alert("백업 실패: " + e.message);
+    showBackupMsg("백업 실패: " + e.message, "err");
   } finally {
-    const b = document.getElementById("backupBtn"); if (b) b.disabled = false;
+    setBackupBusy(false);
+  }
+}
+
+function fmtBytes(n) {
+  if (!n) return "0바이트";
+  if (n < 1024) return n + "바이트";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + "KB";
+  return (n / 1024 / 1024).toFixed(1) + "MB";
+}
+// 저장 확인 모달 — 이 버튼을 눌러야 서버에 'ok'가 기록된다.
+function showBackupVerifyModal(errText) {
+  const el = document.getElementById("backupModal"); if (!el || !PENDING_BACKUP) return;
+  const p = PENDING_BACKUP;
+  const shrinkWarn = p.shrunk ? `<div class="status warn" style="margin-top:8px">
+      ⚠️ 이번 백업 파일이 <b>직전 백업(${fmtBytes(p.prevBytes)})보다 크게 작습니다(${fmtBytes(p.bytes)})</b>.
+      서버가 엉뚱한(비어 있는) 데이터베이스를 백업했을 수 있습니다.
+      ZIP 안 <b>README.txt의 건수</b>를 열어 확인하고, 숫자가 0이거나 지나치게 적으면
+      운영 담당자에게 알려 주세요.</div>` : "";
+  const err = errText ? `<div class="status warn" style="margin-top:8px">${esc(errText)}</div>` : "";
+  el.innerHTML = `<div style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:130;
+      display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="max-width:460px;width:100%">
+      <h2 style="margin-top:0">💾 파일이 저장되었는지 확인해 주세요</h2>
+      <div class="hint">다운로드 폴더에 <b><code>${esc(p.name)}</code></b> 파일이 있는지 확인하고
+        <b>[확인했습니다]</b>를 누르세요. 이 버튼을 눌러야 "백업함"으로 기록되고 경고가 사라집니다.
+        <b>파일이 보이지 않으면 누르지 마세요</b> — 없는 백업을 있다고 믿는 것이 가장 위험합니다.</div>
+      ${shrinkWarn}${err}
+      <div id="backupVerifyMsg" class="hint" style="min-height:14px"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="sm bk-action" onclick="confirmBackupSaved()">✅ 확인했습니다</button>
+        <button class="sm ghost bk-action" onclick="cancelBackupVerify()">파일이 없습니다</button></div></div></div>`;
+  applyBackupBusy();
+}
+function cancelBackupVerify() {
+  PENDING_BACKUP = null;
+  document.getElementById("backupModal").innerHTML = "";
+  showBackupMsg("저장되지 않았습니다. 다시 내려받아 주세요(경고는 그대로 둡니다).", "err");
+  renderBackup();
+}
+async function confirmBackupSaved() {
+  if (!PENDING_BACKUP || BACKUP_BUSY) return;
+  const p = PENDING_BACKUP;
+  setBackupBusy(true);
+  showBackupMsg("서버에 기록하는 중입니다…", "");
+  try {
+    BACKUP = await api("POST", "/api/admin/backup/confirm", { id: p.id, bytes: p.bytes });
+    BACKUP_STATE = "ok";
+    PENDING_BACKUP = null;
+    localStorage.removeItem(BACKUP_SNOOZE_KEY);
+    document.getElementById("backupModal").innerHTML = "";
+    renderBackup();
+    showBackupMsg("백업을 마쳤습니다 ✓ 파일을 안전한 곳에 보관하세요.", "ok");
+  } catch (e) {
+    // 파일은 받았지만 확정이 서버에 닿지 않았다 → 성공으로 기록하지 않는다(경고 유지).
+    // 실패 사유는 **모달 안에** 띄운다. 예전에는 화면 밖 설정 카드에 쓰고 똑같은
+    // "백업이 필요합니다" 팝업만 다시 띄워서, 몇 번 겪으면 "이 경고는 고장났다"로 학습했다.
+    showBackupVerifyModal("서버에 기록하지 못했습니다: " + e.message +
+      " — 파일은 이미 받으셨습니다. [확인했습니다]를 다시 눌러 주세요.");
+  } finally {
+    setBackupBusy(false);
   }
 }
 
