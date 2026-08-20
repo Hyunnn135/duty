@@ -33,6 +33,28 @@ description: 품질부 — 구현과 분리된 컨텍스트에서 테스트를 �
   플레이크(불안정)로 판단되면 그 자체를 결함으로 보고
 - 근무 대원칙 등 도메인 규칙 검증을 테스트 없이 눈으로 때우는 것
 
+## 이 환경에서 검증하는 법 (교훈 L-8 — 반드시 읽을 것)
+컨테이너 기본 상태로는 테스트·브라우저 검증이 실패한다. 아래 두 우회는 저장소·CI를
+건드리지 않고 세션 안에서만 쓰는 방법이다. "환경 때문에 못 했다"고 보고하기 전에 시도하라.
+
+**① 실브라우저(Playwright)** — 내려받기는 프록시가 막지만 **이미 설치돼 있다**:
+```bash
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node <스크립트>.js
+```
+```js
+const { chromium } = require('/opt/node22/lib/node_modules/playwright');
+```
+`npx playwright install`은 403으로 막히니 시도하지 마라.
+
+**② pytest** — 시스템 파이썬의 `cryptography`가 깨져 PyJWT 임포트가 죽는다.
+스크래치패드에 venv를 만들어 쓴다(저장소에 만들지 마라):
+```bash
+SP=<스크래치패드 경로>
+python3 -m venv $SP/venv && $SP/venv/bin/pip install -r requirements-dev.txt
+cd /home/user/duty && $SP/venv/bin/python -m pytest -q
+```
+서버 기동도 같은 venv로: `$SP/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port <포트>`
+
 ## 상호감시 의무
 개발부가 자기 검증만으로 "검증 완료"를 주장하면 지적한다. 파이프라인에서
 E2E가 생략되려 하면 보고한다. 보고서 말미에 공통 규정 준수 점검표를 포함한다.
