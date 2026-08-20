@@ -216,6 +216,7 @@ class TokenResponse(BaseModel):
     name: str
     ward: str
     empno: str = ""
+    uid: int = 0  # users.id — 화면이 로그인 직후에도 uid를 표시할 수 있게 함께 내려준다
 
 
 class UserInfo(BaseModel):
@@ -400,7 +401,7 @@ def register(body: RegisterRequest) -> TokenResponse:
             "SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
         return TokenResponse(token=_make_token(user), role=user["role"],
                              name=user["name"], ward=user["ward"],
-                             empno=user["empno"] or "")
+                             empno=user["empno"] or "", uid=user["id"])
     except HTTPException:
         try:
             conn.rollback()
@@ -457,7 +458,7 @@ def login(body: LoginRequest) -> TokenResponse:
             raise HTTPException(401, "사번(또는 이메일)이나 비밀번호가 올바르지 않습니다.")
         return TokenResponse(token=_make_token(user), role=user["role"],
                              name=user["name"], ward=user["ward"],
-                             empno=user["empno"] or "")
+                             empno=user["empno"] or "", uid=user["id"])
     finally:
         conn.close()
 

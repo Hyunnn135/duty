@@ -216,6 +216,9 @@
       <div class="hint">부서원에게 이 코드를 알려주면, 회원가입 화면의 "초대 코드"란에 입력해 가입합니다. 코드가 유출됐다면 재발급하세요(이전 코드는 즉시 무효).</div>
     </div>
 
+    <!-- 내 계정 번호(uid) 카드 자리 — 운영자(마스터)에게만 JS가 채운다 -->
+    <div id="uidBox"></div>
+
     <!-- 데이터 백업 카드 자리 — 허가 계정에만 JS가 채운다(그 외 계정은 DOM에 없음) -->
     <div id="backupBox"></div>
 
@@ -431,7 +434,8 @@ async function submitAuth() {
       return;
     }
     localStorage.setItem("duty_token", data.token);
-    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "" };
+    ME = { name: data.name, role: data.role, ward: data.ward, empno: data.empno || "",
+           uid: data.uid || 0 };
     onAuthed();
   } catch (e) { authError("서버에 연결할 수 없습니다"); }
 }
@@ -487,6 +491,7 @@ async function onAuthed() {
   userName.textContent = ME.name;
   userRole.textContent = ROLE_KO[ME.role] || ME.role;
   renderEmpnoHint();
+  renderUidCard();
   buildTabs();
   // 명단: 관리자는 서버에서 불러오고(없으면 seed), 부서원도 이름 조회용으로 불러온다
   try {
@@ -524,6 +529,33 @@ async function rotateInvite() {
   } catch (e) { inviteMsg.textContent = "재발급 실패: " + e.message; }
 }
 
+// 내 계정 번호(uid) — 배포 담당자가 백업 허가 계정을 지정할 때 쓰는 값이다.
+// 사번·이메일이 아니라 uid로 지정하는 이유: 사번 문자열로 지정하면 그 사번이 아직
+// 아무 계정에도 없는 동안 다른 사람이 먼저 등록해 가로챌 수 있다(선점). uid는 가입할
+// 때 서버가 정해 주고 바뀌지 않아 가로챌 수 없다. 그래서 **가입을 먼저 하고** 여기서
+// 확인한 번호를 배포 담당자에게 알려주는 순서가 된다(DEPLOY §7.6).
+function renderUidCard() {
+  const box = document.getElementById("uidBox"); if (!box) return;
+  if (!isMaster() || !ME || !ME.uid) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="card">
+    <h2>🆔 내 계정 번호 <span class="sub">백업 권한을 지정할 때 배포 담당자에게 알려주는 값</span></h2>
+    <div class="row">
+      <code id="myUid" style="font-size:18px;font-weight:800;letter-spacing:2px;background:#f1f5f9;padding:6px 14px;border-radius:8px">${ME.uid}</code>
+      <button class="sm ghost" onclick="copyUid()">📋 복사</button>
+      <span id="uidMsg" class="muted"></span>
+    </div>
+    <div class="hint">이 번호는 <b>가입할 때 자동으로 정해지고 바뀌지 않습니다</b>(비밀번호가 아니라 순번이라
+      알려져도 그것만으로는 아무 권한이 생기지 않습니다). 데이터 백업 기능을 쓰려면 이 번호를 배포 담당자에게
+      알려 주세요. 담당자가 서버 설정(DEPLOY 문서 §7.6)에 넣으면 아래에 백업 카드가 나타납니다.</div>
+  </div>`;
+}
+function copyUid() {
+  const el = document.getElementById("uidMsg");
+  navigator.clipboard.writeText(String(ME.uid)).then(
+    () => { el.textContent = "복사됨 ✓"; setTimeout(() => el.textContent = "", 1500); },
+    () => { el.textContent = String(ME.uid); });
+}
+
 /* ====================== 데이터 백업 (허가 계정 전용) ====================== */
 // 노출 판정에 data-admin/hideAdminEls를 재사용하지 않는다 — 그건 관리자+운영자
 // 공용이고, 백업은 환경변수로 허가된 단일 계정만 쓸 수 있다. **서버 403이 본
@@ -556,9 +588,12 @@ function renderBackup() {
         <button class="sm" id="backupBtn" onclick="downloadBackup()">💾 백업 내려받기</button>
         <span id="backupInfo" class="muted"></span>
       </div>
-      <div class="hint">명단·근무표·원티드 신청 등 <b>모든 데이터</b>를 ZIP 파일 하나로 내려받습니다.
-        간호사 <b>실명·사번이 들어 있으니</b> 본인 기기의 안전한 곳에만 보관하고, 메신저·메일·공용
-        폴더로 공유하지 마세요. 한 달에 한 번 내려받기를 권장합니다.</div>
+      <div class="hint">명단·근무표·원티드 신청·계정 목록에 더해 <b>수신함 피드백 원문</b>까지
+        <b>모든 데이터</b>를 ZIP 파일 하나로 내려받습니다. 간호사 <b>실명·사번이 들어 있으니</b> 본인 기기의
+        안전한 곳에만 보관하고, 메신저·메일·공용 폴더로 공유하지 마세요.
+        <b>OneDrive·iCloud 동기화가 켜진 폴더(바탕화면·문서·다운로드)에 두지 마세요</b> — 그대로 인터넷에
+        올라갑니다. 잃어버렸다면 즉시 초대 코드를 재발급하고, 복구에 쓰고 나면 파일을 삭제하세요.
+        한 달에 한 번 내려받기를 권장합니다.</div>
       <div id="backupMsg" class="hint" style="min-height:14px"></div></div>`;
   }
   const info = document.getElementById("backupInfo");
@@ -619,11 +654,16 @@ async function downloadBackup() {
     if (res.status === 401) { localStorage.removeItem("duty_token"); showAuth(true); return; }
     if (!res.ok) throw new Error("서버가 거부했습니다 (" + res.status + ")");
     const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
-    dl(await res.blob(), m ? m[1] : "duty_backup.zip");
+    const backupId = +(res.headers.get("X-Backup-Id") || 0);
+    // blob()은 본문을 **끝까지** 받아야 성공한다 — 중간에 끊기면 여기서 예외가 나고
+    // 아래 확정 호출에 도달하지 않으므로, 서버 이력은 pending으로 남아 경고가 유지된다.
+    const blob = await res.blob();
+    dl(blob, m ? m[1] : "duty_backup.zip");
+    // 파일을 실제로 다 받았다는 확정 신호. 이 호출이 서버의 성공 이력('ok')을 만든다.
+    BACKUP = await api("POST", "/api/admin/backup/confirm", { id: backupId, bytes: blob.size });
     if (msg) { msg.textContent = "백업 파일을 내려받았습니다 ✓ 안전한 곳에 보관하세요."; msg.style.color = "var(--ok)"; }
     localStorage.removeItem(BACKUP_SNOOZE_KEY);
     document.getElementById("backupModal").innerHTML = "";  // 성공 → 팝업 소멸
-    BACKUP = await api("GET", "/api/admin/backup/status");  // 배너도 서버 판정으로 갱신
     renderBackup();
   } catch (e) {
     if (msg) { msg.textContent = "백업 실패: " + e.message; msg.style.color = "var(--err)"; }
