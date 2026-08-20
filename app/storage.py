@@ -287,6 +287,10 @@ class FeedbackItem(BaseModel):
 
 
 EXPIRED_MSG = "신청 기한이 만료되었습니다. 추가 수정 필요 시 부서장에게 직접 문의하세요."
+PUBLISHED_MSG = ("이미 근무표가 발행된 달이라 신청할 수 없습니다. "
+                 "변경이 필요하면 부서장에게 직접 문의하세요.")
+PAST_MONTH_MSG = ("이미 지난 달이라 신청할 수 없습니다. "
+                  "변경이 필요하면 부서장에게 직접 문의하세요.")
 
 
 # ============================ 라우터 ============================
@@ -456,6 +460,31 @@ def _window_open(conn: sqlite3.Connection, ward: str, year: int, month: int) -> 
     return True, ""
 
 
+def _blocked_reason(conn: sqlite3.Connection, ward: str, year: int, month: int) -> str:
+    """신청 자체가 무의미한 달인지 판정 — 차단 사유(한국어) 또는 "".
+
+    (a) 근무표가 이미 발행된 달, (b) KST 기준 지난 달. 두 경우 신청을 받아도
+    반영할 수 없어 부서원이 오해하므로, 신청 기간 설정과 무관하게 막는다.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM schedules WHERE ward=? AND year=? AND month=?", (ward, year, month)
+    ).fetchone()
+    if row is not None:
+        return PUBLISHED_MSG
+    today = datetime.now(KST)  # 사용자는 KST 기준으로 '이번 달'을 인식한다(교훈 L-4)
+    if (year, month) < (today.year, today.month):
+        return PAST_MONTH_MSG
+    return ""
+
+
+def _request_open(conn: sqlite3.Connection, ward: str, year: int, month: int) -> tuple[bool, str]:
+    """부서원이 지금 신청할 수 있는지 — 차단 규칙이 신청 기간 설정보다 우선한다."""
+    blocked = _blocked_reason(conn, ward, year, month)
+    if blocked:
+        return False, blocked
+    return _window_open(conn, ward, year, month)
+
+
 @router.post("/wanted", response_model=WantedItem)
 def submit_wanted(
     body: WantedSubmit,
@@ -470,7 +499,7 @@ def submit_wanted(
         raise HTTPException(422, f"{body.year}년 {body.month}월은 {last_day}일까지입니다.")
     conn = _conn()
     try:
-        is_open, msg = _window_open(conn, user.ward, body.year, body.month)
+        is_open, msg = _request_open(conn, user.ward, body.year, body.month)
         if not is_open:
             raise HTTPException(403, msg)
         cur = conn.execute(
@@ -614,7 +643,9 @@ def set_window(
             (user.ward, body.year, body.month, body.opens_at, body.closes_at, body.note),
         )
         conn.commit()
-        is_open, msg = _window_open(conn, user.ward, body.year, body.month)
+        # 저장 직후 응답도 부서원이 실제로 보게 될 상태와 같아야 한다 — 발행된 달에
+        # 기간을 저장하면 '열림'으로 답하고 실제로는 막히는 불일치를 방지.
+        is_open, msg = _request_open(conn, user.ward, body.year, body.month)
         return WindowStatus(year=body.year, month=body.month, opens_at=body.opens_at,
                             closes_at=body.closes_at, note=body.note, is_open=is_open, message=msg)
     finally:
@@ -632,7 +663,7 @@ def get_window(
             "SELECT * FROM request_windows WHERE ward=? AND year=? AND month=?",
             (user.ward, year, month)
         ).fetchone()
-        is_open, msg = _window_open(conn, user.ward, year, month)
+        is_open, msg = _request_open(conn, user.ward, year, month)
         return WindowStatus(
             year=year, month=month,
             opens_at=row["opens_at"] if row else None,
