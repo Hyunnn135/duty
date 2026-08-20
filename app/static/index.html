@@ -40,6 +40,9 @@
   button.sm { padding: 6px 12px; font-size: 12.5px; }
   button.danger { background: #ef4444; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  /* 접힌 <details> 안을 확실히 감춘다 — .row/.hint 처럼 display를 지정한 작성자 규칙이
+     브라우저 기본 규칙을 이겨서, 접혀 있는데도 내용이 그대로 보이는 것을 실측했다. */
+  details:not([open]) > *:not(summary) { display: none; }
   .hint { font-size: 11px; color: #94a3b8; margin-top: 4px; }
   .status { padding: 11px 15px; border-radius: 8px; margin-bottom: 14px; font-size: 14px; }
   .status.ok { background: var(--okbg); color: var(--ok); }
@@ -535,6 +538,7 @@ let BACKUP = null;                          // {last_backup_at, days_since, leve
 let BACKUP_STATE = "loading";               // loading | ok | noperm | error
 let BACKUP_BUSY = false;                    // 중복 클릭 방지(배너·모달 버튼 포함)
 let PENDING_BACKUP = null;                  // {id, bytes, name} — 저장 확인 대기 중인 백업
+let BACKUP_REVOKE_NOTE = "";                // 회수 직후 등록 카드에 한 번 띄우는 안내
 const BACKUP_SNOOZE_KEY = "duty_backup_snooze";
 // KST 달력 날짜(YYYY-MM-DD) — "오늘은 나중에"는 KST 당일 자정까지만 유효(교훈 L-4)
 function kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
@@ -572,8 +576,11 @@ function backupAgoText() {
 function renderBackupClaim() {
   const box = document.getElementById("backupClaimBox"); if (!box) return;
   if (BACKUP_STATE !== "noperm" || !isMaster()) { box.innerHTML = ""; return; }
+  const note = BACKUP_REVOKE_NOTE
+    ? `<div class="status warn">${BACKUP_REVOKE_NOTE}</div>` : "";
   box.innerHTML = `<div class="card">
     <h2>🔐 백업 권한 등록 <span class="sub">운영 담당자에게 받은 코드를 한 번만 입력합니다</span></h2>
+    ${note}
     <div class="row">
       <input id="claimCode" type="password" placeholder="권한 코드" autocomplete="off"
              style="min-width:220px" onkeydown="if(event.key==='Enter')submitBackupClaim()">
@@ -594,12 +601,39 @@ async function submitBackupClaim() {
   try {
     BACKUP = await api("POST", "/api/admin/backup/claim", { code });
     BACKUP_STATE = "ok";
+    BACKUP_REVOKE_NOTE = "";  // 재등록됐으므로 회수 안내는 내린다
     if (input) input.value = "";
     renderBackup();
   } catch (e) {
     if (msg) { msg.textContent = "등록 실패: " + e.message; msg.style.color = "var(--err)"; }
   } finally {
     const b = document.getElementById("claimBtn"); if (b) b.disabled = false;
+  }
+}
+
+// 권한 회수. 실수로 누르기 어렵게 접힌 <details> 안에 두고 **코드 재입력 + 확인**을
+// 요구하지만 숨기지는 않는다 — 회수 경로가 없어서 퇴사자·유출된 코드의 권한이
+// 그대로 남는 것이 지금까지의 결함이었다.
+async function submitBackupRevoke() {
+  const input = document.getElementById("revokeCode"), btn = document.getElementById("revokeBtn");
+  const msg = document.getElementById("revokeMsg");
+  const code = input ? input.value.trim() : "";
+  if (!code) { if (msg) { msg.textContent = "권한 코드를 입력하세요."; msg.style.color = "var(--err)"; } return; }
+  if (!confirm("권한을 가진 모든 계정의 백업 권한을 회수할까요?\n회수 뒤에는 권한 코드로 다시 등록해야 합니다.")) return;
+  if (btn) btn.disabled = true;
+  if (msg) { msg.textContent = "회수하는 중입니다…"; msg.style.color = ""; }
+  try {
+    const r = await api("POST", "/api/admin/backup/revoke", { code });
+    if (input) input.value = "";
+    BACKUP_REVOKE_NOTE = "백업 권한 " + (r.revoked || 0) + "건을 회수했습니다."
+      + ((r.revoked || 0) > 1 ? " 본인 외의 계정도 권한을 가지고 있었습니다 — 운영 담당자에게 알리세요." : "")
+      + " 계속 쓰려면 아래에 권한 코드를 넣어 다시 등록하세요.";
+    BACKUP = null; BACKUP_STATE = "noperm";
+    renderBackup();
+  } catch (e) {
+    if (msg) { msg.textContent = "회수 실패: " + e.message; msg.style.color = "var(--err)"; }
+  } finally {
+    const b = document.getElementById("revokeBtn"); if (b) b.disabled = false;
   }
 }
 
@@ -636,7 +670,21 @@ function renderBackup() {
         올라갑니다. 잃어버렸다면 즉시 초대 코드를 재발급하고, 복구에 쓰고 나면 파일을 삭제하세요.
         한 달에 한 번 내려받기를 권장합니다.</div>
       <div id="backupDenied" class="hint" style="min-height:0"></div>
-      <div id="backupMsg" class="hint" style="min-height:14px"></div></div>`;
+      <div id="backupMsg" class="hint" style="min-height:14px"></div>
+      <details id="backupRevokeBox" style="margin-top:10px">
+        <summary style="cursor:pointer">🔓 백업 권한 회수 <span class="muted">— 담당자 교체·퇴사·코드 유출 시</span></summary>
+        <div class="hint" style="margin-top:6px">회수하면 <b>이 계정을 포함해 권한을 가진 모든 계정</b>의
+          백업 권한이 한 번에 꺼집니다. 누가 등록해 뒀는지 모르는 상태를 한 번에 정리하기 위한 것이며,
+          회수 뒤에는 <b>새 담당자가 권한 코드로 다시 등록</b>하면 됩니다.
+          코드가 샜다면 배포 담당자에게 <b>코드를 새로 바꿔 달라고 먼저 요청</b>한 뒤 회수하세요.
+          데이터는 지워지지 않습니다.</div>
+        <div class="row" style="margin-top:6px">
+          <input id="revokeCode" type="password" placeholder="권한 코드" autocomplete="off"
+                 style="min-width:220px" onkeydown="if(event.key==='Enter')submitBackupRevoke()">
+          <button class="sm" id="revokeBtn" onclick="submitBackupRevoke()">권한 회수</button>
+        </div>
+        <div id="revokeMsg" class="hint" style="min-height:14px"></div>
+      </details></div>`;
   }
   const info = document.getElementById("backupInfo");
   if (info) {

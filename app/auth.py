@@ -20,6 +20,7 @@ import os
 import secrets
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
@@ -139,6 +140,19 @@ def _init_db(conn: sqlite3.Connection) -> None:
     if "backup_owner" not in {r["name"] for r in conn.execute("PRAGMA table_info(users)")}:
         conn.execute(
             "ALTER TABLE users ADD COLUMN backup_owner INTEGER NOT NULL DEFAULT 0")
+    # 권한 코드 실패 잠금 상태 — 계정 행에 붙인다(backup.py가 읽고 쓴다).
+    # 프로세스 메모리에 두면 scale-to-zero로 인스턴스가 내려갈 때 잠금이 통째로
+    # 풀리고, 출처 IP를 키에 넣으면 프록시 뒤(Railway)에서는 전원이 같은 IP로 보여
+    # 아무나 5회 틀려 정상 운영자를 막을 수 있다. IP를 DB에 남기면 백업 ZIP으로
+    # 실려 나가기까지 한다(개인정보 — 교훈 L-1). 그래서 **계정 축만, DB에** 남긴다.
+    ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    if "claim_fails" not in ucols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN claim_fails INTEGER NOT NULL DEFAULT 0")
+    if "claim_locked_until" not in ucols:
+        # 이 시각(UTC ISO)까지 잠금. 실패할 때마다 '지금 + 잠금시간'으로 갱신되므로
+        # **마지막 실패 시각의 표지**로도 쓴다(전역 실패 총량의 창 판정 — backup.py).
+        conn.execute("ALTER TABLE users ADD COLUMN claim_locked_until TEXT")
     # 대문자 정규화 이전 커밋으로 저장됐을 수 있는 소문자 사번을 1회 정규화(방어적)
     # — 조회·중복검사·명단 매칭이 모두 대문자 기준이므로 저장 데이터도 맞춘다.
     try:
@@ -314,6 +328,93 @@ def grant_backup_owner(uid: int) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def revoke_all_backup_owners() -> list[tuple[int, str]]:
+    """**모든 계정**의 백업 권한 플래그를 끄고, 실제로 꺼진 (uid, 병동) 목록을 준다.
+
+    계정을 골라 끄지 않는 것이 이 기능의 핵심이다. 회수가 필요한 상황(담당자 교체·
+    퇴사·코드 유출)에서는 "누가 몰래 등록해 뒀는지 모른다"는 것이 문제이므로,
+    한 번에 전원을 0으로 되돌리고 정당한 운영자가 코드로 다시 등록한다.
+    """
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, ward FROM users WHERE backup_owner=1 ORDER BY id").fetchall()
+        conn.execute("UPDATE users SET backup_owner=0 WHERE backup_owner=1")
+        conn.commit()
+        return [(int(r["id"]), r["ward"] or "") for r in rows]
+    finally:
+        conn.close()
+
+
+# ---- 권한 코드 실패 잠금 (계정 축만 · DB 영속) ----
+#
+# 시각은 전부 `_utc_now_iso()`가 만든 같은 형식(UTC ISO, 고정 오프셋)이라 문자열
+# 비교가 곧 시각 비교다. 파싱 없이 SQL에서 바로 창을 자를 수 있다.
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def claim_fail_state(uid: int) -> tuple[int, str]:
+    """(연속 실패 횟수, 잠금 해제 시각). 창이 이미 지났으면 (0, "")."""
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT claim_fails, claim_locked_until FROM users WHERE id=?",
+            (uid,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return 0, ""
+    until = _row_get(row, "claim_locked_until") or ""
+    if not until or until <= _utc_now_iso():
+        return 0, ""  # 창이 지났으면 처음부터 다시 센다
+    return int(_row_get(row, "claim_fails", 0) or 0), until
+
+
+def record_claim_fail(uid: int, lock_sec: int) -> None:
+    """실패 1회를 계정 행에 누적하고 잠금 창을 '지금 + lock_sec'으로 민다."""
+    fails, _until = claim_fail_state(uid)
+    until = (datetime.now(timezone.utc) + timedelta(seconds=lock_sec)).isoformat()
+    conn = _conn()
+    try:
+        conn.execute("UPDATE users SET claim_fails=?, claim_locked_until=? WHERE id=?",
+                     (fails + 1, until, uid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_claim_fails(uid: int) -> None:
+    """코드가 맞았을 때 그 계정의 실패 누적을 지운다."""
+    conn = _conn()
+    try:
+        conn.execute(
+            "UPDATE users SET claim_fails=0, claim_locked_until=NULL WHERE id=?", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recent_claim_fail_total() -> int:
+    """아직 창이 살아 있는 계정들의 실패 횟수 합계 — 전역 실패 총량.
+
+    계정 축만 잠그면 공격자는 병동을 새로 열어 master 계정을 만들 때마다 5회씩
+    무한히 시도할 수 있다. 그 합계에 상한을 두려면 "최근에 실패한 계정 전부"를
+    봐야 하는데, 실패할 때마다 밀어 둔 `claim_locked_until`이 곧 마지막 실패
+    시각의 표지라 별도 컬럼 없이 창을 자를 수 있다.
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(claim_fails), 0) AS n FROM users "
+            "WHERE claim_locked_until IS NOT NULL AND claim_locked_until > ?",
+            (_utc_now_iso(),)).fetchone()
+    finally:
+        conn.close()
+    return int(row["n"] if row else 0)
 
 
 def _find_by_login(conn: sqlite3.Connection, login_id: str) -> sqlite3.Row | None:

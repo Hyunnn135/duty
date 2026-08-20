@@ -31,7 +31,14 @@
 그대로 통과한다. 그래서 README에 주요 테이블 **행수**를 함께 적어, 사람이 "이 백업이
 비어 있지 않은지"를 눈으로 대조할 수 있게 한다.
 
-환경 변수: DUTY_BACKUP_CLAIM_CODE (권한 코드 — 배포 환경에서만 설정, 등록 후 삭제 가능).
+권한은 코드로 **켜고(claim) 끌 수 있다(revoke)**. 회수는 계정을 고르지 않고 전원의
+플래그를 0으로 되돌린다 — 담당자 교체·퇴사·코드 유출 때 필요한 것은 "누가 들고
+있는지 모르는 상태를 한 번에 정리하는 것"이기 때문이다. 정리한 뒤 정당한 운영자가
+코드로 다시 등록한다.
+
+환경 변수: DUTY_BACKUP_CLAIM_CODE (권한 코드 — 배포 환경에서만 설정). 등록이 끝나면
+지워도 되지만 **지운 상태에서는 회수도 할 수 없다**. 담당자 교체·유출 때는 새 코드를
+넣어 배포한 뒤 회수 → 재등록 순서로 한다(DEPLOY §7.6).
 """
 from __future__ import annotations
 
@@ -48,11 +55,20 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from .auth import UserInfo, get_current_user, grant_backup_owner
+from .auth import (
+    UserInfo,
+    claim_fail_state,
+    clear_claim_fails,
+    get_current_user,
+    grant_backup_owner,
+    record_claim_fail,
+    recent_claim_fail_total,
+    revoke_all_backup_owners,
+)
 from .storage import KST, _conn, _db_path, _now
 
 # 경고 단계 경계 (KST 기준 경과일) — 마스터 승인 규칙
@@ -141,9 +157,20 @@ SNAPSHOT_BUSY_TIMEOUT_MS = 5000
 # 최소 길이 미만이면 **등록 기능 자체를 끈다**(fail-closed).
 CLAIM_CODE_ENV = "DUTY_BACKUP_CLAIM_CODE"
 CLAIM_CODE_MIN_LEN = 8
-# 실패 시도 제한 — 계정당·출처 IP당. 20자 코드라도 무제한 시도는 허용하지 않는다.
+# 실패 시도 제한 — **계정당**. 20자 코드라도 무제한 시도는 허용하지 않는다.
 CLAIM_MAX_FAILS = 5
 CLAIM_LOCK_SEC = 15 * 60
+# 전역 실패 총량 상한. 계정 축만 잠그면 공격자가 병동을 새로 열어 master 계정을
+# 만들 때마다 5회씩 무한히 시도할 수 있다(가입은 값싸다). 잠금 창이 아직 살아 있는
+# 계정들의 실패 합계가 이 값에 닿으면 등록·회수 경로를 통째로 잠근다.
+#
+# 값(30)의 근거: 계정 6개분이다. 정상 운영자가 혼자 밟을 수 있는 수(5)의 6배라
+# 오타로는 닿지 않고, 자동 대입은 15분당 30회 = 하루 2,880회로 묶인다 — 최소 길이
+# 8자 무작위 코드(≈10^14)에도 턱없이 부족한 속도다. 대신 **공격 중에는 정상
+# 운영자의 등록도 최대 15분 막힌다**: 등록은 배포 직후·DB 초기화 후에만 하는 1회성
+# 작업이고 15분 뒤 저절로 풀리므로, 무한 대입을 열어 두는 쪽보다 낫다고 판단했다.
+# (창은 CLAIM_LOCK_SEC과 같다 — 실패마다 미는 잠금 시각이 곧 창의 경계다.)
+CLAIM_GLOBAL_MAX_FAILS = 30
 CLAIM_DISABLED_MSG = (
     "백업 권한 등록이 준비되지 않았습니다. 운영 담당자에게 문의하세요."
 )
@@ -151,7 +178,12 @@ CLAIM_BAD_CODE_MSG = "권한 코드가 올바르지 않습니다."
 CLAIM_LOCKED_MSG = (
     "권한 코드를 여러 번 잘못 입력했습니다. 15분 뒤에 다시 시도하세요."
 )
+CLAIM_GLOBAL_LOCKED_MSG = (
+    "권한 코드를 잘못 입력한 시도가 최근에 지나치게 많았습니다. "
+    "15분 뒤에 다시 시도하고, 짐작 가는 바가 없으면 코드를 새로 바꾸세요."
+)
 CLAIM_NOT_MASTER_MSG = "병동 마스터 계정만 백업 권한을 등록할 수 있습니다."
+REVOKE_NOT_MASTER_MSG = "병동 마스터 계정만 백업 권한을 회수할 수 있습니다."
 
 
 class BackupError(RuntimeError):
@@ -182,47 +214,36 @@ def claim_enabled() -> bool:
     return len(_claim_code()) >= CLAIM_CODE_MIN_LEN
 
 
-# 실패 시도 카운터(계정·IP별). 프로세스 메모리에만 두는 이유: DB에 남기면 IP가
-# 백업 ZIP에까지 실려 나가고(개인정보 — 교훈 L-1) 잠금 상태가 정본 데이터에 섞인다.
-# 한계도 분명하다 — scale-to-zero로 인스턴스가 내려가면 카운터가 초기화된다. 다만
-# 대입 공격은 인스턴스를 계속 깨워 두므로 공격 중에는 카운터가 유지되고, 시도 사실
-# 자체는 backup_log(denied)에 영구 기록된다.
-_claim_fails: dict[str, tuple[int, float]] = {}  # key -> (실패 횟수, 잠금 해제 시각)
+# 실패 시도 카운터는 **계정 행(users)** 에 있다 — auth.claim_fail_state 등.
+#
+# 축을 계정 하나로 줄인 이유: 예전에는 출처 IP도 키에 넣었는데, Railway처럼 모든
+# 요청이 같은 프록시를 거치는 환경에서는 전원이 같은 IP로 보여 **아무나 5회 틀리면
+# 정상 운영자도 15분간 등록하지 못하는** 사실상의 전역 잠금이 됐다. IP를 DB에
+# 남기는 것은 백업 ZIP으로 실려 나가므로 애초에 선택지가 아니다(교훈 L-1).
+#
+# DB에 둔 이유: 프로세스 메모리에 두면 scale-to-zero로 인스턴스가 내려갈 때 잠금이
+# 통째로 풀린다(직전 라운드의 자진 신고 한계). 계정 축만 남기면 공격자가 계정을
+# 새로 만들며 우회할 수 있으므로 전역 실패 총량 상한을 함께 둔다.
+
+def _claim_locked(uid: int) -> bool:
+    fails, _until = claim_fail_state(uid)
+    return fails >= CLAIM_MAX_FAILS
 
 
-def _claim_keys(user: UserInfo, request: Request | None) -> list[str]:
-    keys = [f"uid:{user.uid}"]
-    client = getattr(request, "client", None) if request is not None else None
-    host = getattr(client, "host", "") if client else ""
-    if host:
-        # 프록시 뒤에서는 모든 요청이 같은 IP로 보일 수 있다 — 계정별 카운터가 주
-        # 방어선이고 IP는 보조다(공용 NAT에서 서로를 잠글 수 있으나 15분이면 풀린다).
-        keys.append(f"ip:{host}")
-    return keys
+def _claim_guard(uid: int) -> None:
+    """잠긴 상태면 429로 끊는다 — 코드를 대조하기 **전에** 호출한다."""
+    if _claim_locked(uid):
+        raise HTTPException(429, CLAIM_LOCKED_MSG)
+    if recent_claim_fail_total() >= CLAIM_GLOBAL_MAX_FAILS:
+        raise HTTPException(429, CLAIM_GLOBAL_LOCKED_MSG)
 
 
-def _claim_locked(keys: list[str]) -> bool:
-    now = time.monotonic()
-    for k in keys:
-        fails, until = _claim_fails.get(k, (0, 0.0))
-        if fails >= CLAIM_MAX_FAILS and now < until:
-            return True
-    return False
+def _claim_record_fail(uid: int) -> None:
+    record_claim_fail(uid, CLAIM_LOCK_SEC)
 
 
-def _claim_record_fail(keys: list[str]) -> None:
-    now = time.monotonic()
-    for k in keys:
-        fails, until = _claim_fails.get(k, (0, 0.0))
-        if fails >= CLAIM_MAX_FAILS and now >= until:
-            fails = 0  # 잠금이 풀렸으면 처음부터 다시 센다
-        fails += 1
-        _claim_fails[k] = (fails, now + CLAIM_LOCK_SEC)
-
-
-def _claim_clear(keys: list[str]) -> None:
-    for k in keys:
-        _claim_fails.pop(k, None)
+def _claim_clear(uid: int) -> None:
+    clear_claim_fails(uid)
 
 
 def require_backup_owner(
@@ -637,6 +658,16 @@ class BackupClaimRequest(BaseModel):
     code: str = Field("", max_length=200, description="운영자에게 받은 백업 권한 코드")
 
 
+class BackupRevokeRequest(BaseModel):
+    code: str = Field("", max_length=200, description="백업 권한 코드(회수에도 필요)")
+
+
+class BackupRevokeResult(BaseModel):
+    # 실제로 꺼진 계정 수. 1보다 크면 **나 말고도 권한을 들고 있던 계정이 있었다**는
+    # 뜻이라 운영자가 그 자리에서 알아야 할 정보다(유출 정황).
+    revoked: int = 0
+
+
 def _kst_day_start_utc(days_ago: int) -> str:
     """KST 기준 '오늘 - days_ago일'의 자정을 저장 형식(UTC ISO)으로."""
     day = (datetime.now(KST) - timedelta(days=days_ago)).date()
@@ -670,6 +701,31 @@ def _record_denied(actor: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _record_granted(user: UserInfo) -> None:
+    """권한 **부여**를 남긴다 — 거부만 남기면 사후 확인이 반쪽이다.
+
+    코드가 새어 제3의 master가 몰래 등록해도, 예전에는 `denied` 행만 있고 "언제 누가
+    권한을 얻었는지"는 어디에도 없었다. 등록은 드문 사건이므로 합치지 않고 매번
+    남긴다(회수 후 재등록도 각각 한 줄로 보인다).
+
+    이 행은 **성공한 백업이 아니다** — level 판정은 `status='ok'` 행만 세므로
+    `archived`·`pending`·`fail`·`denied`와 같은 취급이다.
+    """
+    _insert_log(_actor(user), user.ward, 0, "granted")
+
+
+def _record_revoked(revoked: list[tuple[int, str]]) -> None:
+    """권한 **회수**를 회수된 계정마다 한 줄씩 남긴다.
+
+    행위자가 아니라 **권한을 잃은 계정**을 actor로 적는다. `granted`와 짝이 맞아
+    (granted uid:5 → revoked uid:5) 계정별 권한 이력이 그대로 읽히고, 유출 상황에서
+    정작 알아야 할 "그때 누가 권한을 들고 있었나"가 남는다. 몇 건이 회수됐는지는
+    **행 수가 곧 건수**라 byte_size 같은 다른 자리를 빌릴 필요가 없다.
+    """
+    for uid, ward in revoked:
+        _insert_log(f"uid:{uid}", ward, 0, "revoked")
 
 
 def _last_ok_byte_size() -> int:
@@ -793,7 +849,6 @@ def confirm_backup(
 @router.post("/backup/claim", response_model=BackupStatus)
 def claim_backup_owner(
     body: BackupClaimRequest,
-    request: Request,
     user: Annotated[UserInfo, Depends(get_current_user)],
     response: Response,
 ) -> BackupStatus:
@@ -807,22 +862,61 @@ def claim_backup_owner(
         raise HTTPException(403, CLAIM_NOT_MASTER_MSG)
     if not claim_enabled():
         # 코드 미설정·빈 값·8자 미만 → 등록 기능 자체가 꺼진 상태(fail-closed).
-        # 이건 시도가 아니라 설정 미비이므로 denied로 기록하지 않는다.
+        # 설정 미비이지만 **두드린 사실은 남긴다** — 코드를 넣기 전(배포 직후)이
+        # 가장 취약한 시기인데 그 기간의 시도가 통째로 안 남으면 사후에 알 길이 없다.
+        _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_DISABLED_MSG)
-    keys = _claim_keys(user, request)
-    if _claim_locked(keys):
-        raise HTTPException(429, CLAIM_LOCKED_MSG)
+    _claim_guard(user.uid)
     # compare_digest — 앞자리부터 몇 글자가 맞는지 응답 시간으로 새어 나가지 않게 한다.
     if not hmac.compare_digest(body.code.strip().encode("utf-8"),
                                _claim_code().encode("utf-8")):
-        _claim_record_fail(keys)
+        _claim_record_fail(user.uid)
         _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_BAD_CODE_MSG)
-    _claim_clear(keys)
+    _claim_clear(user.uid)
     if not grant_backup_owner(user.uid):
         raise HTTPException(401, "계정을 찾을 수 없습니다. 다시 로그인해 주세요.")
+    _record_granted(user)
     response.headers.update(NO_STORE)
     return _current_status()
+
+
+@router.post("/backup/revoke", response_model=BackupRevokeResult)
+def revoke_backup_owners(
+    body: BackupRevokeRequest,
+    user: Annotated[UserInfo, Depends(get_current_user)],
+    response: Response,
+) -> BackupRevokeResult:
+    """권한 코드로 **모든 계정의** 백업 반출 권한을 회수한다.
+
+    없어서는 안 되는 짝이다 — 등록만 있고 회수가 없으면 퇴사·담당자 교체·코드 유출
+    때 전체 DB 반출 권한이 그대로 남는다("코드를 다시 넣으면 담당자가 바뀐다"는 것은
+    사실이 아니었다. 새 계정에 플래그가 하나 더 붙을 뿐이었다).
+
+    계정을 고르게 하지 않는 이유: 코드가 샌 상황에서는 "누가 몰래 등록했는지 모른다"는
+    것이 문제다. 전원을 0으로 되돌린 뒤 정당한 운영자가 코드로 다시 등록하면 된다.
+    (코드도 함께 바꿔 배포한 뒤 회수하는 순서를 문서에 적어 뒀다 — DEPLOY §7.6.)
+
+    등록과 같은 문(코드·마스터·잠금)을 쓴다. 회수 쪽만 무르면 그쪽이 구멍이 된다.
+    """
+    if user.role != "master":
+        _record_denied(_actor(user))
+        raise HTTPException(403, REVOKE_NOT_MASTER_MSG)
+    if not claim_enabled():
+        _record_denied(_actor(user))
+        raise HTTPException(403, CLAIM_DISABLED_MSG)
+    _claim_guard(user.uid)
+    if not hmac.compare_digest(body.code.strip().encode("utf-8"),
+                               _claim_code().encode("utf-8")):
+        _claim_record_fail(user.uid)
+        _record_denied(_actor(user))
+        raise HTTPException(403, CLAIM_BAD_CODE_MSG)
+    _claim_clear(user.uid)
+    revoked = revoke_all_backup_owners()
+    _record_revoked(revoked)
+    response.headers.update(NO_STORE)
+    # 회수한 본인도 권한을 잃었으므로 백업 상태(BackupStatus)는 돌려주지 않는다.
+    return BackupRevokeResult(revoked=len(revoked))
 
 
 @router.get("/backup/status", response_model=BackupStatus)
