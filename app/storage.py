@@ -10,6 +10,7 @@ ward로 스코프한다.
   - wanted_requests : 부서원 원티드 신청 + 승인 상태.
   - request_windows : 원티드 신청 기간(부서장 통제) — 만료 시 경고.
   - feedback        : 마스터 수신함 (사용자 → 마스터 메시지).
+  - backup_log      : 데이터 백업 내려받기 이력 (backup.py가 기록·조회).
 
 환경 변수: DUTY_DB (auth.py와 동일 경로).
 """
@@ -175,6 +176,14 @@ def _conn() -> sqlite3.Connection:
             message TEXT NOT NULL,
             created_at TEXT,
             read_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS backup_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor TEXT NOT NULL,
+            ward TEXT DEFAULT '',
+            created_at TEXT,
+            byte_size INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'ok'
         );
         """
     )

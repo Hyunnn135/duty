@@ -86,6 +86,10 @@
   .barrow { display: grid; grid-template-columns: 46px 1fr 30px; align-items: center; gap: 8px; font-size: 12px; }
   .bar { height: 16px; background: var(--n); border-radius: 3px; min-width: 2px; }
   .muted { color: #94a3b8; font-size: 12.5px; }
+  /* 미백업 경고 배너 — 45일 이상이면 상단에 고정되고 닫을 수 없다 */
+  .bkbanner { position: sticky; top: 0; z-index: 60; display: flex; gap: 10px; align-items: center;
+    flex-wrap: wrap; padding: 11px 16px; font-size: 13.5px; font-weight: 600;
+    background: var(--errbg); color: var(--err); border-bottom: 1px solid #fca5a5; }
   a { color: var(--d); }
   @media (max-width: 640px) {
     .wrap { padding: 12px; }
@@ -133,6 +137,9 @@
     <button class="sm" onclick="logout()" style="background:#334155">로그아웃</button>
   </div>
 </header>
+
+<!-- 미백업 경고 배너 자리 — 허가 계정에만 JS가 채운다(그 외 계정은 DOM에 없음) -->
+<div id="backupBanner"></div>
 
 <!-- 로그인/회원가입 오버레이 -->
 <div id="authOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto;-webkit-overflow-scrolling:touch;">
@@ -203,6 +210,9 @@
       </div>
       <div class="hint">부서원에게 이 코드를 알려주면, 회원가입 화면의 "초대 코드"란에 입력해 가입합니다. 코드가 유출됐다면 재발급하세요(이전 코드는 즉시 무효).</div>
     </div>
+
+    <!-- 데이터 백업 카드 자리 — 허가 계정에만 JS가 채운다(그 외 계정은 DOM에 없음) -->
+    <div id="backupBox"></div>
 
     <div class="card">
       <h2>👥 간호사 명단 <span class="sub">부서장 전용 · 위→아래 = 경력순 (드래그 또는 ▲▼로 순서 변경)</span>
@@ -347,6 +357,9 @@
   </div>
 </div>
 
+<!-- 미백업 경고 팝업 자리 — 허가 계정에만 JS가 채운다 -->
+<div id="backupModal"></div>
+
 <!-- 근무표 생성 불가 안내 팝업 -->
 <div id="genErrModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:120;align-items:center;justify-content:center;padding:20px">
   <div class="card" style="max-width:520px;width:100%;max-height:80vh;overflow-y:auto">
@@ -486,6 +499,7 @@ async function onAuthed() {
   renderRoster(); renderLinkHint(); updateHolidayHint();
   // 발행된 근무표를 서버에서 우선 로드(부서원 포함). 없으면 로컬 복원.
   await loadPublished();
+  await initBackup();  // 백업 버튼·경고는 허가 계정에만(서버가 판정)
 }
 async function loadInvite() {
   try { const inv = await api("GET", "/api/auth/invite");
@@ -504,6 +518,108 @@ async function rotateInvite() {
     inviteMsg.textContent = "재발급 완료 ✓"; setTimeout(() => inviteMsg.textContent = "", 2000);
   } catch (e) { inviteMsg.textContent = "재발급 실패: " + e.message; }
 }
+
+/* ====================== 데이터 백업 (허가 계정 전용) ====================== */
+// 노출 판정에 data-admin/hideAdminEls를 재사용하지 않는다 — 그건 관리자+운영자
+// 공용이고, 백업은 환경변수로 허가된 단일 계정만 쓸 수 있다. **서버 403이 본
+// 방어선**이고 여기서 숨기는 것은 편의일 뿐이다(허가 여부도 서버 응답으로 판정).
+let BACKUP = null;                          // {last_backup_at, days_since, level}
+const BACKUP_SNOOZE_KEY = "duty_backup_snooze";
+// KST 달력 날짜(YYYY-MM-DD) — "오늘은 나중에"는 KST 당일 자정까지만 유효(교훈 L-4)
+function kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
+function fmtKst(iso) {
+  try { return new Date(new Date(iso).getTime() + 9 * 3600 * 1000)
+    .toISOString().slice(0, 16).replace("T", " ") + " (KST)"; } catch (e) { return iso; }
+}
+async function initBackup() {
+  try { BACKUP = await api("GET", "/api/admin/backup/status"); }
+  catch (e) { BACKUP = null; return; }  // 403 = 허가 계정 아님 → 아무것도 그리지 않는다
+  renderBackup();
+}
+function backupAgoText() {
+  if (!BACKUP || BACKUP.days_since == null) return "아직 백업한 적이 없습니다";
+  const d = BACKUP.days_since;
+  return (d === 0 ? "오늘" : d + "일 전") + " · " + fmtKst(BACKUP.last_backup_at);
+}
+function renderBackup() {
+  if (!BACKUP) return;
+  const box = document.getElementById("backupBox");
+  if (box && !document.getElementById("backupBtn")) {
+    box.innerHTML = `<div class="card">
+      <h2>💾 데이터 백업 <span class="sub">허가된 계정만 사용할 수 있습니다</span></h2>
+      <div class="row">
+        <button class="sm" id="backupBtn" onclick="downloadBackup()">💾 백업 내려받기</button>
+        <span id="backupInfo" class="muted"></span>
+      </div>
+      <div class="hint">명단·근무표·원티드 신청 등 <b>모든 데이터</b>를 ZIP 파일 하나로 내려받습니다.
+        간호사 <b>실명·사번이 들어 있으니</b> 본인 기기의 안전한 곳에만 보관하고, 메신저·메일·공용
+        폴더로 공유하지 마세요. 한 달에 한 번 내려받기를 권장합니다.</div>
+      <div id="backupMsg" class="hint" style="min-height:14px"></div></div>`;
+  }
+  const info = document.getElementById("backupInfo");
+  if (info) {
+    info.textContent = "마지막 백업: " + backupAgoText();
+    info.style.color = BACKUP.level === "ok" ? "" : "var(--err)";
+  }
+  renderBackupBanner();
+  maybeShowBackupModal();
+}
+// 45일 이상: 닫을 수 없는 상단 고정 배너 (백업에 성공해야 사라진다)
+function renderBackupBanner() {
+  const el = document.getElementById("backupBanner"); if (!el) return;
+  if (!BACKUP || BACKUP.level !== "critical") { el.innerHTML = ""; return; }
+  const how = BACKUP.days_since == null
+    ? "데이터를 한 번도 백업하지 않았습니다"
+    : `데이터를 백업한 지 <b>${BACKUP.days_since}일</b> 지났습니다`;
+  el.innerHTML = `<div class="bkbanner">⚠️ ${how}. 지금 백업하지 않으면 사고 시 복구할 수 없습니다.
+    <button class="sm" onclick="downloadBackup()" style="margin-left:auto">💾 지금 백업하기</button></div>`;
+}
+// 30일 이상: 로그인 후 첫 진입 시 팝업. "오늘은 나중에"는 KST 당일에만 유효.
+function maybeShowBackupModal() {
+  const el = document.getElementById("backupModal"); if (!el) return;
+  if (!BACKUP || BACKUP.level === "ok") { el.innerHTML = ""; return; }
+  if (localStorage.getItem(BACKUP_SNOOZE_KEY) === kstToday()) return;
+  const how = BACKUP.days_since == null
+    ? "데이터를 아직 한 번도 백업하지 않았습니다."
+    : `데이터를 백업한 지 <b>${BACKUP.days_since}일</b> 지났습니다.`;
+  el.innerHTML = `<div style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:130;
+      display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="max-width:420px;width:100%">
+      <h2 style="margin-top:0">💾 데이터 백업이 필요합니다</h2>
+      <div class="status warn">${how} 서버에 문제가 생기면 명단·근무표를 되돌릴 수 없습니다.</div>
+      <div class="hint">버튼을 누르면 ZIP 파일 하나가 내려받아집니다(약 몇 초). 개인정보가 들어 있으니
+        본인 기기에만 보관하세요.</div>
+      <div class="row" style="margin-top:12px">
+        <button class="sm" onclick="downloadBackup()">💾 지금 백업하기</button>
+        <button class="sm ghost" onclick="snoozeBackup()">오늘은 나중에</button></div></div></div>`;
+}
+function snoozeBackup() {
+  localStorage.setItem(BACKUP_SNOOZE_KEY, kstToday());  // 다음 날 다시 노출된다
+  document.getElementById("backupModal").innerHTML = "";
+}
+async function downloadBackup() {
+  const btn = document.getElementById("backupBtn"), msg = document.getElementById("backupMsg");
+  if (btn) btn.disabled = true;
+  if (msg) { msg.textContent = "백업 파일을 만드는 중입니다…"; msg.style.color = ""; }
+  try {
+    const res = await fetch("/api/admin/backup", { headers: authHeaders() });
+    if (res.status === 401) { localStorage.removeItem("duty_token"); showAuth(true); return; }
+    if (!res.ok) throw new Error("서버가 거부했습니다 (" + res.status + ")");
+    const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+    dl(await res.blob(), m ? m[1] : "duty_backup.zip");
+    if (msg) { msg.textContent = "백업 파일을 내려받았습니다 ✓ 안전한 곳에 보관하세요."; msg.style.color = "var(--ok)"; }
+    localStorage.removeItem(BACKUP_SNOOZE_KEY);
+    document.getElementById("backupModal").innerHTML = "";  // 성공 → 팝업 소멸
+    BACKUP = await api("GET", "/api/admin/backup/status");  // 배너도 서버 판정으로 갱신
+    renderBackup();
+  } catch (e) {
+    if (msg) { msg.textContent = "백업 실패: " + e.message; msg.style.color = "var(--err)"; }
+    else alert("백업 실패: " + e.message);
+  } finally {
+    const b = document.getElementById("backupBtn"); if (b) b.disabled = false;
+  }
+}
+
 function normRosterRow(n) {
   return { id: n.id || genId(), name: n.name || "", team: [1,2,3].includes(+n.team) ? +n.team : 1,
     rank: n.seniority_rank || n.rank || 999, night: n.night_eligible !== false,

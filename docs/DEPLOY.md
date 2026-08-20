@@ -186,6 +186,52 @@ gcloud secrets add-iam-policy-binding smtp-password \
 | `EXTRA_ENV` | `,SMTP_HOST=smtp.gmail.com,SMTP_PORT=587,SMTP_USER=you@gmail.com,SMTP_FROM=you@gmail.com,NOTIFY_ON_PUBLISH=1` |
 | `EXTRA_SECRETS` | `,SMTP_PASSWORD=smtp-password:latest` |
 
+## 7.6 데이터 백업 권한 `DUTY_BACKUP_OWNER` (설정하지 않으면 기능 잠김)
+
+`GET /api/admin/backup` 은 병동 **전체 데이터(실명·사번 포함)** 를 ZIP으로 반출한다.
+그래서 `role=="master"` 만으로는 열리지 않는다 — 마스터는 **병동마다** 생기므로
+(병동 개설자 = 그 병동의 마스터) 역할만 보면 다른 병동 개설자가 전 병동 데이터를
+가져갈 수 있다.
+
+| 조건 | 결과 |
+|------|------|
+| `DUTY_BACKUP_OWNER` 미설정(또는 빈 값) | **전원 403** — 기본 개방 없음 |
+| 목록에 있고 `role=="master"` | 200 (ZIP) |
+| 목록에 있으나 admin·staff | 403 |
+| 목록에 없는 master(다른 병동 개설자 포함) | 403 |
+| 토큰 없음·만료 | 401 |
+
+```bash
+# 값은 허가할 계정의 사번(또는 이메일). 여러 개면 콤마로 구분한다.
+#   DUTY_BACKUP_OWNER=<사번>
+#   DUTY_BACKUP_OWNER=<사번1>,<사번2>,<이메일>
+# 사번은 대소문자를 구분하지 않는다(대문자로 정규화해 비교).
+gcloud run services update "$SERVICE" --region "$REGION" \
+  --update-env-vars DUTY_BACKUP_OWNER=<사번>
+```
+
+> ⚠️ **실제 사번 값을 저장소(코드·문서·커밋 메시지)에 적지 않는다** — 개인정보다.
+> 값은 배포 플랫폼의 환경변수/시크릿에만 넣는다. GitHub Actions CD를 쓰면
+> §7.5의 `EXTRA_ENV` 변수에 `,DUTY_BACKUP_OWNER=<사번>` 를 이어붙인다(맨 앞 콤마 주의).
+> 허가 계정을 바꾸려면 이 환경변수만 고치면 되고 재배포 외 조치는 없다.
+
+**백업 이력**: 성공 1회마다 `backup_log` 테이블에 1행(actor·ward·created_at(UTC)·byte_size·status)이
+쌓인다. `GET /api/admin/backup/status` 가 마지막 성공 시각과 경고 단계(KST 경과일 기준
+`ok`<30일 / `warn` 30~44 / `critical` ≥45일 또는 이력 0건)를 돌려주고, 화면 팝업·배너가 이 값을 따른다.
+
+### 복구 절차 (수작업 — 업로드 기능은 없음)
+
+1. 마스터에게 받은 ZIP에서 **`duty.db`** 만 꺼낸다(`tables/*.csv`는 사람이 보는 사본이라 복구에 쓰지 않는다).
+2. 서비스를 잠시 멈추거나 접속을 막는다(쓰기 중 교체 금지).
+3. 볼륨의 기존 파일을 옆으로 치운다 — `duty.db`, `duty.db-wal`, `duty.db-shm` **3개를 같이**
+   옮긴다. `-wal`/`-shm`이 남으면 새 파일과 섞여 손상된다.
+4. 백업본 `duty.db`를 `DUTY_DB` 경로(Cloud Run: `/data/duty.db`, Railway: 볼륨 `/data/duty.db`)에 놓는다.
+5. 서비스를 다시 띄우고 `/health` → 로그인 → 명단·근무표가 보이는지 확인한다.
+6. 복구가 끝나면 임시로 꺼내둔 백업 파일 사본을 삭제한다(개인정보 잔존 금지).
+
+> 백업은 **`VACUUM INTO`**(실패 시 `Connection.backup()`)로 뜬 일관된 스냅샷이라 WAL이
+> 반영된 단일 파일이다. 운영 중에도 안전하게 받을 수 있고, 받는 동안 앱은 계속 동작한다.
+
 ## 8. 첫 배포
 
 - `main`에 병합하면 자동 실행되거나,
@@ -253,6 +299,7 @@ Railway(railway.app)에 같은 Docker 이미지를 배포할 수 있다. 월 약
    → Dockerfile을 자동 감지해 빌드·배포한다 (main 브랜치 기준)
 3. 서비스 클릭 → **Variables** 탭:
    - `DUTY_SECRET` = 아무도 모르는 긴 무작위 문장(JWT 서명키 — 절대 공유 금지)
+   - `DUTY_BACKUP_OWNER` = 백업을 허가할 계정의 사번 `<사번>` (§7.6 — 미설정이면 백업 기능 잠김)
    - (`DUTY_DB`는 Dockerfile 기본값 `/data/duty.db` 사용, `PORT`는 Railway가 자동 주입)
 4. 서비스 우클릭(또는 Settings) → **Attach Volume** → mount path `/data`
    (SQLite 영속화 — 볼륨 없이 재시작하면 데이터가 사라진다!)
