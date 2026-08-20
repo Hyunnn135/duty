@@ -50,6 +50,7 @@ KST = timezone(timedelta(hours=9))
 BACKUP_URL = "/api/admin/backup"
 CONFIRM_URL = "/api/admin/backup/confirm"
 CLAIM_URL = "/api/admin/backup/claim"
+REVOKE_URL = "/api/admin/backup/revoke"
 STATUS_URL = "/api/admin/backup/status"
 
 CLAIM_ENV = "DUTY_BACKUP_CLAIM_CODE"
@@ -76,8 +77,6 @@ NEW_SECRET_COLUMNS = ["reset_token", "api_key", "totp_secret", "recovery_code"]
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     """DB·임시 디렉터리를 테스트마다 격리하고, 권한 관련 환경변수를 모두 지운다."""
-    import app.backup as backup
-
     db_dir = tmp_path / "dbdir"
     db_dir.mkdir()
     tmp_dir = tmp_path / "srvtmp"
@@ -88,10 +87,12 @@ def env(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TMPDIR", str(tmp_dir))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_dir), raising=False)
-    # 잠금 카운터는 **프로세스 메모리**다(알려진 한계). 테스트 간 격리를 위해 비운다.
-    backup._claim_fails.clear()
+    # 잠금 카운터·해제시각은 이제 **계정 행(users.claim_fails·claim_locked_until)에
+    # DB로 영속**한다(Q-3). DUTY_DB가 테스트마다 새 파일이라 잠금 상태도 함께
+    # 격리되므로, 예전의 프로세스 전역 카운터(backup._claim_fails) 초기화는 필요
+    # 없다 — 그 메모리 카운터 자체가 구현에서 제거됐다(이 fixture가 그것을 참조하다
+    # 전 백업 테스트가 setup 단계에서 죽던 [인프라] 결함을 여기서 해소한다).
     yield SimpleNamespace(db_dir=db_dir, tmp_dir=tmp_dir)
-    backup._claim_fails.clear()
 
 
 @pytest.fixture()
@@ -526,13 +527,14 @@ def test_master_without_flag_is_denied(client, people, code):
 
 
 @pytest.mark.parametrize("url,method", [
-    (BACKUP_URL, "GET"), (STATUS_URL, "GET"), (CLAIM_URL, "POST"), (CONFIRM_URL, "POST")])
+    (BACKUP_URL, "GET"), (STATUS_URL, "GET"), (CLAIM_URL, "POST"),
+    (REVOKE_URL, "POST"), (CONFIRM_URL, "POST")])
 def test_unauthenticated_is_401(client, people, code, url, method):
-    """무인증은 전 경로 401(권한 이전에 인증)."""
+    """무인증은 전 경로 401(권한 이전에 인증) — 회수(revoke) 경로도 포함."""
     if method == "GET":
         r = client.get(url)
     else:
-        body = {"code": code} if url == CLAIM_URL else {"id": 1, "bytes": 1}
+        body = {"code": code} if url in (CLAIM_URL, REVOKE_URL) else {"id": 1, "bytes": 1}
         r = client.post(url, json=body)
     assert r.status_code == 401, f"{method} {url} → {r.status_code}"
     for bad in ({"Authorization": "Bearer not-a-token"}, {"Authorization": "Basic x"}):
@@ -615,23 +617,44 @@ def test_lock_expires_after_window(client, people, code, monkeypatch):
     _grant(client, people.owner, code)
 
 
-def test_lock_counter_is_lost_on_process_restart(client, people, code):
-    """**알려진 한계(결함 아님·설계 수용)**: 잠금 카운터는 프로세스 메모리다.
+def test_lock_survives_process_restart(client, people, code):
+    """**기준 반전(Q-3)**: 잠금은 이제 프로세스 메모리가 아니라 **계정 행에 DB로
+    영속**한다. 재시작해도 카운터가 살아남아 잠금이 유지된다.
 
-    재시작하면 카운터가 초기화되어 잠금이 풀린다. 지금은 이것이 의도된 동작이므로
-    사실 그대로 고정해 둔다 — 나중에 잠금을 영속화하면 **이 테스트가 실패하고**,
-    그때 이 테스트를 "재시작해도 잠금 유지"로 바꾸면 된다(판별력 보존).
+    (직전 판의 test_lock_counter_is_lost_on_process_restart는 "메모리라 재시작하면
+    풀린다"를 고정했는데 Q-3로 기준이 뒤집혔다. 폐기하고 이 이름으로 재작성한다.)
+
+    판별력의 핵심은 **DB(users 행)에 실제로 적혔는지 직접 확인**하는 것이다 —
+    잠금을 프로세스 메모리로 되돌리면 이 컬럼들이 비어 이 단언이 깨진다. 새 앱
+    인스턴스(같은 DUTY_DB)로 만든 클라이언트가 여전히 429를 받는 것으로 동작을 확인한다.
     """
     import app.backup as backup
 
     for _ in range(5):
         assert _claim(client, people.owner, _new_claim_code()).status_code == 403
-    assert _claim(client, people.owner, code).status_code == 429
-    backup._claim_fails.clear()  # = 프로세스 재시작(메모리 카운터 소멸)
-    r = _claim(client, people.owner, code)
-    assert r.status_code == 200, (
-        "재시작 후에도 잠금이 유지된다 — 잠금이 영속화된 것으로 보인다. "
-        "설계가 바뀐 것이라면 이 테스트를 '유지'로 갱신할 것.")
+    assert _claim(client, people.owner, code).status_code == 429, "5회 실패 후 잠기지 않음"
+
+    # 잠금 상태가 실제로 **DB(users 행)** 에 적혔는지 직접 본다(영속의 근거).
+    uid = _uid_of(people.owner)
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT claim_fails, claim_locked_until FROM users WHERE id=?", (uid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None and int(row["claim_fails"]) >= backup.CLAIM_MAX_FAILS, \
+        f"실패 횟수가 DB에 영속되지 않음: {dict(row) if row else None}"
+    assert row["claim_locked_until"], "잠금 해제 시각이 DB에 영속되지 않음"
+
+    # 프로세스 재시작 모사: 같은 DUTY_DB를 읽는 새 클라이언트를 띄운다.
+    from app.main import app as fresh_app
+    fresh_client = TestClient(fresh_app)
+    r = fresh_client.post(CLAIM_URL, json={"code": code},
+                          headers=_h(people.owner["token"]))
+    assert r.status_code == 429, (
+        f"재시작 후 잠금이 풀렸다 — 카운터가 영속되지 않는다: {r.status_code} {r.text[:200]}")
+    assert _flag_of(people.owner) == 0, "재시작 후 잠금 중인데 권한이 켜졌다"
 
 
 def test_failed_claims_are_logged_as_denied_once_per_day(client, people, code):
@@ -658,23 +681,25 @@ def test_denied_rows_are_separate_per_account(client, people, code):
     assert expected <= actors, f"거부 이력이 계정별로 남지 않음: {actors} vs {expected}"
 
 
-def test_lock_also_applies_to_the_same_source_ip(client, people, code):
-    """설계 수용 문서화: 잠금 키에는 출처 IP도 들어간다.
+def test_lock_is_per_account_not_ip(client, people, code):
+    """**기준 반전(Q-3)**: 잠금은 **계정 단위**로만 건다. IP 축을 제거했다.
 
-    같은 IP에서 5회 실패하면 **다른 계정도** 15분간 막힌다(프록시 뒤 공용 NAT에서
-    서로를 잠글 수 있음 — 대신 대입 공격이 계정을 바꿔가며 이어가지 못한다).
-
-    품질부는 이 파급을 **가용성 위험**으로 함께 보고했다(Railway처럼 프록시 뒤에서는
-    아무나 5회 오입력해 운영자의 등록을 15분 막을 수 있다). IP 축을 떼기로 결정하면
-    이 테스트가 실패하므로, 그때 "계정 축만 잠근다"로 갱신할 것 — 조용히 사라지지
-    않게 하려고 사실을 고정해 둔다.
+    계정 A(owner)가 5회 실패해 잠겨도, 같은 출처(TestClient는 전 요청이 같은
+    클라이언트=같은 IP)에서 계정 B(other, 다른 병동 master)는 **정답 코드로 즉시
+    등록에 성공**한다. 프록시 뒤 공용 IP에서 정상 운영자가 남의 오입력에 잠기지 않게
+    하려는 전환이다(직전 판의 test_lock_also_applies_to_the_same_source_ip를 폐기·재작성).
     """
     for _ in range(5):
         assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    assert _claim(client, people.owner, code).status_code == 429, "계정 A가 잠기지 않았다"
+
+    # 같은 클라이언트(=같은 IP)의 다른 계정 B는 A의 잠금에 영향받지 않는다.
     r = _claim(client, people.other, code)
-    assert r.status_code == 429, (
-        f"같은 IP의 다른 계정이 곧바로 시도할 수 있다: {r.status_code} — "
-        "IP 축 잠금이 사라졌는지 확인할 것")
+    assert r.status_code == 200, (
+        f"계정 B가 A의 잠금에 휩쓸렸다(IP 축이 남아 있는가?): {r.status_code} {r.text[:200]}")
+    assert _flag_of(people.other) == 1, "잠기지 않은 계정 B의 등록이 반영되지 않았다"
+    # A는 여전히 잠긴 채다(격리 확인).
+    assert _claim(client, people.owner, code).status_code == 429, "A의 잠금이 B 등록으로 풀렸다"
 
 
 # ==================== G-3. 침투 재현 (품질부가 직접 수행) ====================
@@ -787,16 +812,21 @@ def test_flag_disappears_with_database_reset(client, env, monkeypatch, tmp_path)
 # ==================== 이력 3단계 (pending → 사람 확인 → confirm) ====================
 
 def test_download_creates_pending_row_with_header_id(client, owner_ok):
-    """내려받기는 `pending` 행 1개 + `X-Backup-Id` 헤더를 남긴다(아직 성공 아님)."""
+    """내려받기는 `pending` 행 1개 + `X-Backup-Id` 헤더를 남긴다(아직 성공 아님).
+
+    owner_ok의 권한 등록(claim)이 이미 `granted` 행을 남겼으므로(Q-1) **원시 행 수가
+    아니라 status='pending'으로 걸러** 센다 — 계수 방식만 바뀐 것이고 동작은 그대로다.
+    """
     r, bid = _download(client, owner_ok)
-    rows = _log_rows()
-    assert len(rows) == 1, f"행이 1개가 아님: {rows}"
-    row = rows[0]
+    pending = _rows_with("pending")
+    assert len(pending) == 1, f"pending 행이 1개가 아님: {_log_rows()}"
+    row = pending[0]
     assert row["id"] == bid, f"헤더 id({bid})와 기록 id({row['id']})가 다름"
-    assert row["status"] == "pending", f"확정 전인데 status={row['status']}"
     assert row["actor"] == f"uid:{_uid_of(owner_ok)}", f"actor 형식이 uid가 아님: {row}"
     assert row["byte_size"] == len(r.content), "pending 행에 실제 크기가 기록되지 않음"
     assert int(r.headers["x-backup-bytes"]) == len(r.content)
+    # 내려받기가 권한 이력을 건드리지 않았는지: granted 행은 그대로 1개.
+    assert len(_rows_with("granted")) == 1, _log_rows()
 
 
 def test_pending_alone_is_not_a_success(client, owner_ok):
@@ -809,13 +839,17 @@ def test_pending_alone_is_not_a_success(client, owner_ok):
 
 
 def test_confirm_marks_ok_and_clears_warning(client, owner_ok):
-    """사람이 [확인했습니다]를 누른 뒤에야 `ok` 1행 + level=ok."""
+    """사람이 [확인했습니다]를 누른 뒤에야 `ok` 1행 + level=ok.
+
+    행 수는 원시 계수가 아니라 status로 거른다 — owner_ok의 claim이 남긴 `granted`
+    행이 함께 있기 때문(Q-1 부수 영향, 계수 방식만 조정).
+    """
     r, bid = _download(client, owner_ok)
     conf = _confirm(client, owner_ok, bid, len(r.content))
     assert conf.status_code == 200, conf.text
-    rows = _log_rows()
-    assert len(rows) == 1 and rows[0]["status"] == "ok", rows
-    assert rows[0]["byte_size"] > 0
+    ok_rows = _rows_with("ok")
+    assert len(ok_rows) == 1, f"ok 행이 1개가 아님: {_log_rows()}"
+    assert ok_rows[0]["byte_size"] > 0
     body = _status(client, owner_ok)
     assert body["level"] == "ok" and body["days_since"] == 0, body
     assert conf.json()["level"] == "ok"
@@ -1703,3 +1737,182 @@ def test_legacy_database_without_backup_owner_column_boots(client, env, tmp_path
     _grant(client, logged_in, old_code)
     r = client.get(BACKUP_URL, headers=_h(logged_in["token"]))
     assert r.status_code == 200 and r.content[:2] == b"PK", r.status_code
+
+
+# ==================================================================
+# 품질부 3차 신설(Q-1~Q-4) — 개발부 cefa33a의 새 동작을 지시서 수용 기준에서
+# 설계한 검증. 계약(엔드포인트·응답 키)만 구현에서 확인하고 기대값은 전부 기준에서 왔다.
+# ==================================================================
+
+
+def _revoke(client, user, value):
+    return client.post(REVOKE_URL, json={"code": value}, headers=_h(user["token"]))
+
+
+def _fresh_master(client, ward, empno):
+    """새 병동을 열어 그 병동 master가 되는 가명 계정 하나."""
+    return _reg(client, email=f"m{empno}@duty.kr", empno=empno, name="가명운영자", ward=ward)
+
+
+# ==================== Q-1. 권한 부여 감사(granted) ====================
+
+def test_claim_success_writes_one_granted_row(client, people, code):
+    """claim 성공 시 `status='granted'` 행이 정확히 1개(actor=uid, 크기 0)."""
+    _grant(client, people.owner, code)
+    granted = _rows_with("granted")
+    assert len(granted) == 1, f"granted 행이 1개가 아님: {_log_rows()}"
+    row = granted[0]
+    assert row["actor"] == f"uid:{_uid_of(people.owner)}", f"actor가 uid 형식이 아님: {row}"
+    assert row["byte_size"] == 0, f"granted 행 크기가 0이 아님: {row}"
+    for leak in (OWNER.name, OWNER.empno, OWNER.email):
+        assert leak not in json.dumps(row, ensure_ascii=False), f"granted 행에 개인정보: {leak}"
+
+
+def test_granted_row_is_not_counted_as_backup_success(client, people, code):
+    """부여 감사행은 **성공한 백업이 아니다** — claim 직후에도 백업 이력이 없으면
+    critical 유지. granted를 level에 세면 등록만 하고 백업은 안 했는데 경고가 꺼진다.
+    """
+    _grant(client, people.owner, code)
+    body = _status(client, people.owner)
+    assert body["level"] == "critical", f"granted가 level 판정에 세어졌다: {body}"
+    assert body["last_backup_at"] is None, body
+    assert body["days_since"] is None, body
+
+
+def test_granted_and_ok_are_independent(client, owner_ok):
+    """granted가 있어도 실제 백업(ok)이 서면 level=ok로 넘어가고, granted 행은 그대로.
+
+    두 이력이 서로를 오염시키지 않는지 — granted 1 + ok 1 이 공존한다.
+    """
+    _full_backup(client, owner_ok)
+    assert len(_rows_with("granted")) == 1, _log_rows()
+    assert len(_rows_with("ok")) == 1, _log_rows()
+    assert _status(client, owner_ok)["level"] == "ok"
+
+
+# ==================== Q-2. 권한 회수(revoke) ====================
+
+def test_revoke_clears_all_flags_and_logs_revoked(client, people, code):
+    """회수는 **모든 계정**의 플래그를 0으로 되돌리고 계정마다 `revoked` 행을 남긴다."""
+    _grant(client, people.owner, code)
+    _grant(client, people.other, code)      # 두 master가 권한을 들고 있는 상황
+    assert _flag_of(people.owner) == 1 and _flag_of(people.other) == 1
+
+    r = _revoke(client, people.owner, code)
+    assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
+    assert r.json()["revoked"] == 2, f"회수된 계정 수가 2가 아님: {r.json()}"
+    assert _flag_of(people.owner) == 0 and _flag_of(people.other) == 0, "플래그가 남았다"
+
+    revoked_actors = {row["actor"] for row in _rows_with("revoked")}
+    expected = {f"uid:{_uid_of(people.owner)}", f"uid:{_uid_of(people.other)}"}
+    assert expected <= revoked_actors, \
+        f"revoked 행이 계정별로 남지 않음: {revoked_actors} vs {expected}"
+    for row in _rows_with("revoked"):
+        assert row["byte_size"] == 0
+        for leak in (OWNER.name, OWNER.empno, OWNER.email, OTHER.name, OTHER.empno):
+            assert leak not in json.dumps(row, ensure_ascii=False), f"revoked 행에 개인정보: {leak}"
+
+
+def test_revoke_then_previous_owner_is_403(client, people, code):
+    """회수 후 이전 담당자는 백업 반출 403(플래그가 꺼졌으므로)."""
+    _grant(client, people.owner, code)
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
+    assert _revoke(client, people.owner, code).status_code == 200
+    r = client.get(BACKUP_URL, headers=_h(people.owner["token"]))
+    assert r.status_code == 403, f"회수 후에도 반출이 열려 있다: {r.status_code}"
+    assert r.content[:2] != b"PK"
+
+
+def test_revoke_then_reclaim_succeeds(client, people, code):
+    """회수 후 정당한 운영자가 같은 코드로 **재등록**하면 다시 200(회수는 재사용 가능)."""
+    _grant(client, people.owner, code)
+    assert _revoke(client, people.owner, code).status_code == 200
+    assert _flag_of(people.owner) == 0
+    _grant(client, people.owner, code)   # 재등록 성공을 단언(_grant 내부)
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
+
+
+def test_revoke_wrong_code_is_rejected_and_keeps_flags(client, people, code):
+    """**잘못된 코드로는 회수 불가**(403) — 플래그는 그대로, revoked 행도 안 생긴다."""
+    _grant(client, people.owner, code)
+    r = _revoke(client, people.owner, _new_claim_code())
+    assert r.status_code == 403, f"틀린 코드로 회수됐다: {r.status_code}"
+    assert _flag_of(people.owner) == 1, "틀린 코드 회수가 플래그를 껐다"
+    assert _rows_with("revoked") == [], f"틀린 코드인데 revoked 행이 남았다: {_log_rows()}"
+    assert client.get(BACKUP_URL, headers=_h(people.owner["token"])).status_code == 200
+
+
+@pytest.mark.parametrize("who", ["staff", "admin"])
+def test_revoke_by_non_master_is_forbidden(client, people, code, who):
+    """**마스터가 아닌 계정**은 정답 코드를 알아도 회수 불가 — 플래그 유지."""
+    _grant(client, people.owner, code)
+    r = _revoke(client, getattr(people, who), code)
+    assert r.status_code == 403, f"{who}가 회수에 성공했다: {r.status_code}"
+    assert _flag_of(people.owner) == 1, f"{who} 회수 시도가 owner 플래그를 껐다"
+    assert _rows_with("revoked") == [], f"{who} 회수 시도가 revoked 행을 남겼다: {_log_rows()}"
+
+
+def test_revoke_when_code_unset_is_denied(client, people):
+    """코드 미설정 상태면 회수 기능도 비활성(fail-closed) — 플래그를 못 건드린다."""
+    # 먼저 코드가 있을 때 등록해 두고, 회수 시점엔 코드가 사라진 상황을 만든다.
+    import app.backup as backup
+    assert not backup.claim_enabled()  # env가 CLAIM_ENV를 지운 상태
+    r = _revoke(client, people.owner, "anything-8plus-xyz")
+    assert r.status_code == 403, f"코드 미설정인데 회수가 동작했다: {r.status_code}"
+
+
+# ==================== Q-3. 계정 단위 잠금 · 전역 상한 30 ====================
+
+def test_global_failure_cap_locks_new_accounts(client, people, code):
+    """**전역 실패 총량 상한(30)**. 잠금 창이 살아 있는 계정들의 실패 합계가 30에
+    닿으면 **아직 한 번도 안 틀린 새 계정**의 시도(정답 코드조차)까지 429로 막힌다.
+
+    계정 축만 잠그면 공격자가 병동을 새로 열어 master를 만들 때마다 5회씩 무한히
+    시도할 수 있으므로, 그 우회를 닫는 상한이다.
+    """
+    import app.backup as backup
+    assert backup.CLAIM_GLOBAL_MAX_FAILS == 30, \
+        f"전역 상한이 기준(30)과 다름: {backup.CLAIM_GLOBAL_MAX_FAILS}"
+
+    # 마스터 5개 계정이 각자 5회씩 실패 → 합계 25 (<30). 아직 전역 잠금 아님.
+    for i in range(5):
+        m = _fresh_master(client, ward=f"8{i}", empno=f"9910{i:02d}")
+        for _ in range(5):
+            assert _claim(client, m, _new_claim_code()).status_code == 403
+
+    # 합계 25 < 30 → 새 계정은 아직 (전역이 아니라) 코드 불일치 403을 받는다(상한 미도달).
+    probe = _fresh_master(client, ward="85", empno="991050")
+    assert _claim(client, probe, _new_claim_code()).status_code == 403, \
+        "합계 25에서 이미 전역 잠금이면 상한이 30보다 낮은 것"
+    # probe가 5회를 채워(위 1 + 아래 4) 합계를 30으로 만든다.
+    for _ in range(4):
+        assert _claim(client, probe, _new_claim_code()).status_code == 403
+
+    # 합계 30 도달 → 완전히 새로운(한 번도 안 틀린) 계정도 **정답 코드로도** 429.
+    victim = _fresh_master(client, ward="86", empno="991060")
+    r = _claim(client, victim, code)
+    assert r.status_code == 429, (
+        f"전역 상한 30에 닿았는데 새 계정이 통과했다: {r.status_code} {r.text[:200]}")
+    assert _flag_of(victim) == 0, "전역 잠금 중인데 권한이 켜졌다"
+
+
+# ==================== Q-4. 코드 미설정 기간의 시도도 denied 기록 ====================
+
+def test_claim_without_code_configured_is_logged_denied(client, people):
+    """코드 **미설정** 상태의 claim 시도도 `denied`로 남는다(배포 직후 취약기 탐지).
+
+    설정 미비라 등록은 거부(403)되지만, 두드린 사실은 **uid별 하루 1행**으로 합쳐 남긴다.
+    """
+    import app.backup as backup
+    assert not backup.claim_enabled(), "이 테스트는 코드 미설정 상태를 전제한다"
+
+    for _ in range(3):
+        r = _claim(client, people.owner, "anything-8plus-xyz")
+        assert r.status_code == 403, f"미설정인데 {r.status_code}: {r.text[:200]}"
+    actor = f"uid:{_uid_of(people.owner)}"
+    mine = [d for d in _rows_with("denied") if d["actor"] == actor]
+    assert len(mine) == 1, f"미설정 시도 3회가 {len(mine)}행(1행이어야 함): {_rows_with('denied')}"
+    assert mine[0]["byte_size"] == 0
+    for leak in (OWNER.name, OWNER.empno, OWNER.email):
+        assert leak not in json.dumps(mine[0], ensure_ascii=False), f"denied 행에 개인정보: {leak}"
+    assert _flag_of(people.owner) == 0

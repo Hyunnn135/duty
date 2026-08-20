@@ -263,6 +263,54 @@ async function run() {
       '같은 나그 팝업으로 돌아가지 않고 모달에서 다시 시도할 수 있다', failModal.slice(0, 120));
     await shot(page, '09-confirm-failed');
     await page.unroute('**/api/admin/backup/confirm');
+
+    // ---------- (신설) 권한 회수 UI (Q-2) ----------
+    // cefa33a가 붙인 새 화면 흐름이라 여기서 실브라우저로 처음 검증한다. 이 흐름이
+    // E2E에서 빠져 있으면 회수 버튼이 화면에서 동작하는지 아무도 보지 못한다(P-1 사각지대).
+    await refresh(page);  // 실패 모달 등 잔여 상태를 걷어내고 깨끗한 백업 카드에서 시작
+    page.on('dialog', (d) => d.accept());  // 회수 confirm() 대화상자 자동 승인
+    const hadCard = await page.evaluate(() => !!document.getElementById('backupBtn'));
+    check(hadCard, '회수 전: 권한 있는 계정이라 백업 카드가 떠 있다');
+
+    // 접힌 <details>를 펼치고 **틀린 코드**로 회수 시도 → 거부되고 카드는 그대로.
+    await page.evaluate(() => {
+      const d = document.getElementById('backupRevokeBox'); if (d) d.open = true;
+    });
+    await page.fill('#revokeCode', 'wrong-revoke-code-0000');
+    await page.click('#revokeBtn');
+    await page.waitForTimeout(900);
+    const rmsg = await page.textContent('#revokeMsg');
+    const stillCard = await page.evaluate(() => !!document.getElementById('backupBtn'));
+    check(/실패/.test(rmsg || '') && stillCard,
+      '틀린 코드 회수: 실패 문구가 뜨고 백업 카드가 그대로다', rmsg);
+    await shot(page, '16-revoke-wrong');
+
+    // **정답 코드**로 회수 → 등록 카드로 되돌아가고 회수 안내가 뜬다.
+    await page.evaluate(() => {
+      const d = document.getElementById('backupRevokeBox'); if (d) d.open = true;
+    });
+    await page.fill('#revokeCode', CODE);
+    await page.click('#revokeBtn');
+    await page.waitForSelector('#backupClaimBox .card', { timeout: 10000 });
+    ui = await page.evaluate(backupUi);
+    check(ui.claimCard && !ui.backupBtn,
+      '정답 코드 회수: 💾 백업 카드가 사라지고 🔐 등록 카드로 되돌아간다',
+      JSON.stringify(ui).slice(0, 160));
+    check(/회수했습니다/.test(ui.bodyText), '회수 후 등록 카드에 회수 안내가 표시된다');
+
+    // 서버에서도 권한이 실제로 꺼졌다: 반출 요청이 403.
+    const afterRevoke = await api('GET', '/api/admin/backup', null,
+      await page.evaluate(() => localStorage.getItem('duty_token')));
+    check(afterRevoke.status === 403,
+      '회수 후 서버도 반출을 403으로 막는다', `status=${afterRevoke.status}`);
+    await shot(page, '17-revoke-done');
+
+    // 회수는 이 공유 계정(owner)의 플래그를 실제로 껐다. 뒤 시나리오(경과일 팝업·
+    // 모바일)가 다시 권한 있는 owner를 전제하므로, 등록 카드에서 정답 코드로 재등록해
+    // 권한을 원상복구한다(재등록이 가능하다는 것 자체가 Q-2 기준이기도 하다).
+    await page.fill('#claimCode', CODE);
+    await page.click('#claimBtn');
+    await page.waitForSelector('#backupBtn', { timeout: 10000 });
     await ctx.close();
 
     // ---------- 10. 경과일별 경고: 10일(조용) → 30일(팝업) → 나중에(당일 무음) ----------
