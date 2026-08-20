@@ -60,14 +60,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from .auth import (
+    CLAIM_BAD,
+    CLAIM_LOCKED,
+    CLAIM_LOCKED_GLOBAL,
+    CLAIM_OK,
     UserInfo,
-    claim_fail_state,
-    clear_claim_fails,
     get_current_user,
-    grant_backup_owner,
-    record_claim_fail,
-    recent_claim_fail_total,
-    revoke_all_backup_owners,
+    run_claim_transaction,
 )
 from .storage import KST, _conn, _db_path, _now
 
@@ -214,7 +213,8 @@ def claim_enabled() -> bool:
     return len(_claim_code()) >= CLAIM_CODE_MIN_LEN
 
 
-# 실패 시도 카운터는 **계정 행(users)** 에 있다 — auth.claim_fail_state 등.
+# 실패 시도 카운터는 **계정 행(users.claim_fails·claim_locked_until)** 에 있고, 잠금
+# 재판정·코드 대조·실패/성공 기록은 auth.run_claim_transaction이 한 트랜잭션으로 묶는다.
 #
 # 축을 계정 하나로 줄인 이유: 예전에는 출처 IP도 키에 넣었는데, Railway처럼 모든
 # 요청이 같은 프록시를 거치는 환경에서는 전원이 같은 IP로 보여 **아무나 5회 틀리면
@@ -225,25 +225,34 @@ def claim_enabled() -> bool:
 # 통째로 풀린다(직전 라운드의 자진 신고 한계). 계정 축만 남기면 공격자가 계정을
 # 새로 만들며 우회할 수 있으므로 전역 실패 총량 상한을 함께 둔다.
 
-def _claim_locked(uid: int) -> bool:
-    fails, _until = claim_fail_state(uid)
-    return fails >= CLAIM_MAX_FAILS
+def _raise_if_gate_closed(outcome: str) -> None:
+    """직렬화 트랜잭션이 잠금/전역상한으로 막았으면 그에 맞는 429를 낸다.
 
-
-def _claim_guard(uid: int) -> None:
-    """잠긴 상태면 429로 끊는다 — 코드를 대조하기 **전에** 호출한다."""
-    if _claim_locked(uid):
+    잠금·코드 대조·실패 기록은 run_claim_transaction 안에서 한 트랜잭션으로 끝난다
+    (①결함1의 검사-후-행동 경합을 없앤다). 여기서는 그 결과 코드를 HTTP로 옮길 뿐이다.
+    """
+    if outcome == CLAIM_LOCKED:
         raise HTTPException(429, CLAIM_LOCKED_MSG)
-    if recent_claim_fail_total() >= CLAIM_GLOBAL_MAX_FAILS:
+    if outcome == CLAIM_LOCKED_GLOBAL:
         raise HTTPException(429, CLAIM_GLOBAL_LOCKED_MSG)
 
 
-def _claim_record_fail(uid: int) -> None:
-    record_claim_fail(uid, CLAIM_LOCK_SEC)
+def _clear_denied_for(user: UserInfo) -> None:
+    """등록에 성공한 계정의 denied 이력을 지운다 (③ denied 오탐, FIX-4).
 
-
-def _claim_clear(uid: int) -> None:
-    clear_claim_fails(uid)
+    denied_last_30d는 '권한 없는 계정의 침입 시도'를 세는 지표인데, 예전에는 운영자
+    본인이 설정 전에 코드를 잘못 넣거나(오타) 코드 미설정기에 두드린 시도까지 여기
+    섞여 30일 빨간 경보로 남았다. 코드를 결국 맞혀 **등록에 성공**한 계정의 과거 거부는
+    침입이 아니라 본인의 설정 과정이므로, 성공 시점에 그 계정(actor=uid)의 denied 행을
+    지운다. 다른 계정(uid≠본인)의 거부 이력은 그대로 둔다 — 그쪽이 진짜 탐지 대상이다.
+    """
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM backup_log WHERE status='denied' AND actor=?",
+                     (_actor(user),))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def require_backup_owner(
@@ -451,7 +460,9 @@ def _readme(taken_at_kst: datetime, counts: list[tuple[str, int]]) -> bytes:
         "  '백업 완료'로 보입니다. 숫자만이 진짜 확인 수단입니다.)\n"
         "  숫자가 이상하면 이 파일을 지우지 말고 운영 담당자에게 알려 주세요.\n\n"
         "CSV에 담기는 내용(전부)\n"
-        "- users        : 가입 계정 목록 — 이름·사번·이메일·역할·병동\n"
+        "- users        : 가입 계정 목록 — 이름·사번·이메일·역할·병동, 그리고 백업\n"
+        "                 권한 상태(backup_owner=1이면 반출 권한 보유)와 권한 코드\n"
+        "                 실패 잠금(claim_fails·claim_locked_until)\n"
         "- rosters      : 간호사 명단(실명·팀·경력순 등)\n"
         "- schedules    : 만들어 둔 근무표와 발행 이력\n"
         "- wanted_requests : 부서원이 낸 원티드 신청과 승인 여부\n"
@@ -866,17 +877,28 @@ def claim_backup_owner(
         # 가장 취약한 시기인데 그 기간의 시도가 통째로 안 남으면 사후에 알 길이 없다.
         _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_DISABLED_MSG)
-    _claim_guard(user.uid)
+    # 잠금 재판정·코드 대조·실패/성공 기록을 한 트랜잭션으로 직렬화한다(①결함1).
     # compare_digest — 앞자리부터 몇 글자가 맞는지 응답 시간으로 새어 나가지 않게 한다.
-    if not hmac.compare_digest(body.code.strip().encode("utf-8"),
-                               _claim_code().encode("utf-8")):
-        _claim_record_fail(user.uid)
+    outcome, data = run_claim_transaction(
+        user.uid,
+        action="grant",
+        max_fails=CLAIM_MAX_FAILS,
+        global_max_fails=CLAIM_GLOBAL_MAX_FAILS,
+        lock_sec=CLAIM_LOCK_SEC,
+        code_ok=lambda: hmac.compare_digest(
+            body.code.strip().encode("utf-8"), _claim_code().encode("utf-8")),
+    )
+    _raise_if_gate_closed(outcome)
+    if outcome == CLAIM_BAD:
         _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_BAD_CODE_MSG)
-    _claim_clear(user.uid)
-    if not grant_backup_owner(user.uid):
+    if data == "missing":
         raise HTTPException(401, "계정을 찾을 수 없습니다. 다시 로그인해 주세요.")
-    _record_granted(user)
+    if data == "granted":
+        # 새로 켜졌을 때만 감사 행을 남긴다 — 이미 소유자의 재-claim은 감사 중복
+        # 적재로 유출 조사 신호를 흐리므로 재기록을 생략한다(③ granted 중복, FIX-5).
+        _record_granted(user)
+    _clear_denied_for(user)  # 본인 오타·미설정기 시도가 침입 경보로 남지 않게(FIX-4)
     response.headers.update(NO_STORE)
     return _current_status()
 
@@ -905,14 +927,22 @@ def revoke_backup_owners(
     if not claim_enabled():
         _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_DISABLED_MSG)
-    _claim_guard(user.uid)
-    if not hmac.compare_digest(body.code.strip().encode("utf-8"),
-                               _claim_code().encode("utf-8")):
-        _claim_record_fail(user.uid)
+    # 등록과 같은 문(코드·마스터·잠금)을 쓴다. 회수의 플래그 끄기·회수 목록 확보를
+    # **같은 트랜잭션 안에서** 처리해, SELECT-후-UPDATE 사이에 grant가 끼어들어 플래그는
+    # 꺼지되 revoked 이력이 안 남는 경합(②D-2)을 없앤다. 잠금·직렬화는 claim과 동일(①).
+    outcome, revoked = run_claim_transaction(
+        user.uid,
+        action="revoke",
+        max_fails=CLAIM_MAX_FAILS,
+        global_max_fails=CLAIM_GLOBAL_MAX_FAILS,
+        lock_sec=CLAIM_LOCK_SEC,
+        code_ok=lambda: hmac.compare_digest(
+            body.code.strip().encode("utf-8"), _claim_code().encode("utf-8")),
+    )
+    _raise_if_gate_closed(outcome)
+    if outcome == CLAIM_BAD:
         _record_denied(_actor(user))
         raise HTTPException(403, CLAIM_BAD_CODE_MSG)
-    _claim_clear(user.uid)
-    revoked = revoke_all_backup_owners()
     _record_revoked(revoked)
     response.headers.update(NO_STORE)
     # 회수한 본인도 권한을 잃었으므로 백업 상태(BackupStatus)는 돌려주지 않는다.
