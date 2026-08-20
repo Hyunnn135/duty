@@ -450,9 +450,11 @@ def download_backup(
     entry_id = _insert_log(_actor(user), user.ward, 0, "pending")
     try:
         data = _build_zip()
-    except Exception:
+    except Exception as exc:
+        # 손상·시간초과 등은 'fail'로 남긴다 — 실패가 어디에도 안 남으면 사후 추적이
+        # 불가능하다. 원인은 서버 로그에 남기고(from exc) 사용자에게는 알리지 않는다.
         _update_log(entry_id, status="fail")
-        raise HTTPException(500, BUILD_FAIL_MSG)
+        raise HTTPException(500, BUILD_FAIL_MSG) from exc
     _update_log(entry_id, byte_size=len(data))
     fname = f"duty_backup_{datetime.now(KST):%Y%m%d_%H%M}.zip"
     return Response(
