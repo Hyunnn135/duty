@@ -1916,3 +1916,47 @@ def test_claim_without_code_configured_is_logged_denied(client, people):
     for leak in (OWNER.name, OWNER.empno, OWNER.email):
         assert leak not in json.dumps(mine[0], ensure_ascii=False), f"denied 행에 개인정보: {leak}"
     assert _flag_of(people.owner) == 0
+
+
+# ==================== 개발부 4차 회귀 고정(품질부 4차) ====================
+# FIX-4·FIX-5 는 4차 리팩터가 6함수를 run_claim_transaction 하나로 통합하며 바꾼
+# 동작이다. 순차 수용 기준으로 고정해 통합 과정에서 커버리지가 빠지지 않게 한다.
+
+
+def test_successful_claim_clears_only_own_denied_rows(client, people, code):
+    """등록 성공 시 **본인** denied 이력만 지우고 다른 계정 denied 는 유지한다(FIX-4).
+
+    본인의 미설정기·오타 시도는 침입이 아니라 설정 과정이므로 성공 시점에 지운다.
+    남의 거부 이력은 진짜 탐지 대상이라 남긴다 — 지우면 침입 신호가 사라진다.
+    """
+    # owner 가 먼저 틀린 코드로 denied 1행을 쌓는다(설정 과정의 오타).
+    assert _claim(client, people.owner, _new_claim_code()).status_code == 403
+    # other(다른 병동 master)도 틀린 코드로 denied 1행(이쪽이 탐지 대상).
+    assert _claim(client, people.other, _new_claim_code()).status_code == 403
+    owner_actor = f"uid:{_uid_of(people.owner)}"
+    other_actor = f"uid:{_uid_of(people.other)}"
+    before = {r["actor"] for r in _rows_with("denied")}
+    assert owner_actor in before and other_actor in before, f"사전 denied 미형성: {before}"
+
+    # owner 가 정답으로 등록 성공 → owner denied 만 사라진다.
+    _grant(client, people.owner, code)
+    after = _rows_with("denied")
+    after_actors = {r["actor"] for r in after}
+    assert owner_actor not in after_actors, f"본인 denied 가 안 지워짐(FIX-4 미동작): {after}"
+    assert other_actor in after_actors, f"남의 denied 가 지워짐(FIX-4 과잉 삭제): {after}"
+
+
+def test_reclaim_does_not_write_duplicate_granted_row(client, people, code):
+    """이미 권한이 있는 계정의 **재-claim** 은 granted 감사행을 새로 쌓지 않는다(FIX-5).
+
+    소유자의 반복 등록마다 granted 가 쌓이면 유출 조사에서 "언제 새로 권한이 생겼나"
+    신호가 중복 적재로 흐려진다. 재-claim 은 200(멱등)이되 granted 는 1개로 고정.
+    """
+    _grant(client, people.owner, code)
+    assert len(_rows_with("granted")) == 1, _log_rows()
+    # 같은 계정이 정답 코드로 여러 번 재등록 — 플래그는 1, granted 는 여전히 1.
+    for _ in range(3):
+        assert _claim(client, people.owner, code).status_code == 200
+    assert _flag_of(people.owner) == 1
+    assert len(_rows_with("granted")) == 1, \
+        f"재-claim 이 granted 를 중복 적재(FIX-5 미동작): {_rows_with('granted')}"
